@@ -1,0 +1,33 @@
+services:
+  # Python FastAPI Backend with WebSockets
+  - type: web
+    name: tripmate-backend
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: "pip install -r requirements-server.txt"
+    startCommand: "uvicorn server.main:app --host 0.0.0.0 --port $PORT --proxy-headers"
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-3.1-flash-lite
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: APP_ENV
+        value: production
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: ALLOWED_ORIGINS
+        value: "https://yashvi2125.github.io,http://localhost:3000,http://localhost:5173"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: tripmate-db
+          property: connectionString
+
+databases:
+  - name: tripmate-db
+    plan: free
+    region: oregon

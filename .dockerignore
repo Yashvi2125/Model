@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+venv
+.venv
+env
+**/__pycache__
+**/*.pyc
+.pytest_cache
+frontend
+docs
+*.zip
+*.db
+.vscode
+.idea
