@@ -15,7 +15,7 @@ def set_loop(loop: asyncio.AbstractEventLoop) -> None:
 
 def spawn(coro: Coroutine[Any, Any, Any]) -> None:
     """Run a coroutine in the background on the server's event loop (works from any thread)."""
-    if _loop is None:
+    if _loop is None or _loop.is_closed():
         coro.close()
         log.error("Event loop not ready; background task dropped")
         return

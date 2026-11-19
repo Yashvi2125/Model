@@ -86,6 +86,8 @@ def test_telegram_identity_and_binding():
 
 @pytest.mark.asyncio
 async def test_echo_loop_prevention_and_relay():
+    from server import runtime
+    runtime.set_loop(asyncio.get_running_loop())
     with SessionLocal() as db_session:
         u = get_or_create_telegram_user(db_session, tg_user_id=999, full_name="Bob")
         trip = Trip(
@@ -187,3 +189,152 @@ async def test_multi_platform_same_trip():
         )
         assert latest.version == 1
         assert "Fushimi Inari" in latest.plan_markdown
+
+
+def test_safe_web_button_filters_localhost():
+    from server.telegram.bot import is_valid_telegram_button_url, safe_web_button
+
+    assert not is_valid_telegram_button_url("http://localhost:3000/app/trips/1")
+    assert not is_valid_telegram_button_url("http://127.0.0.1:8000/api")
+    assert not is_valid_telegram_button_url("http://0.0.0.0:3000")
+    assert not is_valid_telegram_button_url(None)
+    assert not is_valid_telegram_button_url("")
+
+    assert is_valid_telegram_button_url("https://tripmate.onrender.com/app/trips/1")
+    assert is_valid_telegram_button_url("https://t.me/Tripmate_planner_bot?start=4VSE4K9Y")
+
+    assert safe_web_button("Web", "http://localhost:3000/app/trips/1") is None
+    btn = safe_web_button("Web", "https://tripmate.onrender.com/app/trips/1")
+    assert btn is not None
+    assert btn.text == "Web"
+    assert btn.url == "https://tripmate.onrender.com/app/trips/1"
+
+
+def test_argument_and_code_normalization():
+    from server.telegram.bot import normalize_arg, normalize_trip_code
+
+    # Angle brackets, quotes, whitespace
+    assert normalize_arg("<Goa>") == "Goa"
+    assert normalize_arg('"Goa"') == "Goa"
+    assert normalize_arg("  <Goa>  ") == "Goa"
+    assert normalize_arg("[Tokyo]") == "Tokyo"
+
+    # Trip codes
+    assert normalize_trip_code("<4VSE4K9Y>") == "4VSE4K9Y"
+    assert normalize_trip_code("[4VSE4K9Y]") == "4VSE4K9Y"
+    assert normalize_trip_code('"4vse4k9y"') == "4VSE4K9Y"
+    assert normalize_trip_code("  4vse4k9y  ") == "4VSE4K9Y"
+    assert normalize_trip_code("TRIP-4VSE4K9Y") == "TRIP-4VSE4K9Y"
+
+
+@pytest.mark.asyncio
+async def test_send_safe_reply_fallbacks():
+    from server.telegram.bot import send_safe_reply
+    from telegram import constants, InlineKeyboardMarkup, InlineKeyboardButton
+
+    mock_msg = AsyncMock()
+    mock_update = AsyncMock()
+    mock_update.effective_message = mock_msg
+
+    # 1. Successful HTML reply
+    await send_safe_reply(mock_update, "<b>Hello</b>", None)
+    mock_msg.reply_text.assert_called_with("<b>Hello</b>", parse_mode=constants.ParseMode.HTML, reply_markup=None)
+
+    # 2. Markup failure -> retries without markup
+    mock_msg.reply_text.reset_mock()
+    mock_msg.reply_text.side_effect = [Exception("Bad markup"), AsyncMock()]
+    fake_kb = InlineKeyboardMarkup([[InlineKeyboardButton("Bad", callback_data="bad")]])
+    await send_safe_reply(mock_update, "<b>Hello</b>", fake_kb)
+    assert mock_msg.reply_text.call_count == 2
+    mock_msg.reply_text.assert_called_with("<b>Hello</b>", parse_mode=constants.ParseMode.HTML, reply_markup=None)
+
+    # 3. HTML parsing failure -> retries plain text without tags
+    mock_msg.reply_text.reset_mock()
+    mock_msg.reply_text.side_effect = [Exception("Bad entities"), Exception("Bad entities"), AsyncMock()]
+    await send_safe_reply(mock_update, "<b>Unclosed tag", fake_kb)
+    assert mock_msg.reply_text.call_count == 3
+    mock_msg.reply_text.assert_called_with("Unclosed tag", parse_mode=None, reply_markup=None)
+
+
+@pytest.mark.asyncio
+async def test_global_error_handler():
+    from server.telegram.bot import global_telegram_error_handler
+
+    mock_msg = AsyncMock()
+    mock_update = AsyncMock()
+    mock_update.effective_message = mock_msg
+    mock_context = AsyncMock()
+    mock_context.error = ValueError("Unexpected boom!")
+
+    await global_telegram_error_handler(mock_update, mock_context)
+    mock_msg.reply_text.assert_called_once_with("Something went wrong, please try again.")
+
+
+@pytest.mark.asyncio
+async def test_private_chat_newtrip_and_jointrip():
+    from server.telegram.bot import cmd_newtrip, cmd_jointrip
+    from telegram import constants
+
+    with SessionLocal() as db_session:
+        # User in a private chat
+        mock_user = AsyncMock()
+        mock_user.id = 778899
+        mock_user.full_name = "Private User"
+        mock_user.username = "puser"
+        mock_user.first_name = "Private"
+
+        mock_chat = AsyncMock()
+        mock_chat.id = 778899
+        mock_chat.type = constants.ChatType.PRIVATE
+
+        mock_msg = AsyncMock()
+        mock_update = AsyncMock()
+        mock_update.effective_user = mock_user
+        mock_update.effective_chat = mock_chat
+        mock_update.effective_message = mock_msg
+
+        mock_context = AsyncMock()
+        mock_context.args = ["<Goa>"]
+        mock_context.user_data = {}
+
+        # 1. /newtrip <Goa> in private chat
+        await cmd_newtrip(mock_update, mock_context)
+
+        # Confirm trip was created and active_trip_id set in user_data
+        active_id = mock_context.user_data.get("active_trip_id")
+        assert active_id is not None
+
+        trip = db_session.get(Trip, active_id)
+        assert trip is not None
+        assert trip.destination == "Goa"
+        # Confirm telegram_group_chat_id is NOT set in private chat
+        assert trip.telegram_group_chat_id is None
+
+        # Confirm reply sent
+        assert mock_msg.reply_text.called
+        reply_text = mock_msg.reply_text.call_args[0][0]
+        assert "Trip Created Successfully!" in reply_text
+        assert trip.code in reply_text
+
+        # 2. /jointrip with same code -> already joined
+        mock_msg.reply_text.reset_mock()
+        mock_context.args = [f"<{trip.code}>"]
+        await cmd_jointrip(mock_update, mock_context)
+        assert mock_msg.reply_text.called
+        reply_join = mock_msg.reply_text.call_args[0][0]
+        assert "already a member" in reply_join.lower()
+
+        # 3. /jointrip missing code
+        mock_msg.reply_text.reset_mock()
+        mock_context.args = []
+        await cmd_jointrip(mock_update, mock_context)
+        reply_missing = mock_msg.reply_text.call_args[0][0]
+        assert "Please provide a trip code" in reply_missing
+
+        # 4. /jointrip invalid/unknown code
+        mock_msg.reply_text.reset_mock()
+        mock_context.args = ["NONEXIST123"]
+        await cmd_jointrip(mock_update, mock_context)
+        reply_unknown = mock_msg.reply_text.call_args[0][0]
+        assert "No trip found" in reply_unknown
+
