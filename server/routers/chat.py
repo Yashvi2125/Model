@@ -13,6 +13,7 @@ from server.schemas import MessageIn, MessageOut
 from server.security import COOKIE_NAME, origin_allowed, rate_limit, user_from_token
 from server.services import chat_ai
 from server.services import messages as msgs
+from server.services.message_bus import set_telegram_sender, _telegram_sender_func
 from server.services.access import TripAccess, trip_access
 from server.services.realtime import manager
 
@@ -36,7 +37,10 @@ def list_messages(a: TripAccess = Depends(trip_access), db: Session = Depends(ge
 @router.post("/api/trips/{trip_id}/messages", response_model=MessageOut, status_code=201)
 def send_message(body: MessageIn, a: TripAccess = Depends(trip_access), db: Session = Depends(get_db)):
     rate_limit(f"msg:{a.user.id}", 40, 60)
-    m = msgs.post(db, a.trip.id, "user", body.content, a.user.id)
+    m = msgs.post(db, a.trip.id, "user", body.content, a.user.id, channel="web")
+    if a.trip.telegram_group_chat_id and _telegram_sender_func:
+        relay_text = f"💬 <b>{a.user.name} (via web):</b>\n{body.content}"
+        runtime.spawn(_telegram_sender_func(a.trip.telegram_group_chat_id, relay_text))
     if chat_ai.is_ai_mention(body.content):
         runtime.spawn(chat_ai.run_ai_mention(a.trip.id, m.id))
     elif chat_ai.should_auto_extract(body.content):

@@ -25,7 +25,7 @@ export interface TripCreateInput {
 }
 
 export interface ChatMessage {
-  id: number; trip_id: number; kind: "user" | "ai" | "system"; sender_id: number | null; sender_name: string;
+  id: number; trip_id: number; kind: "user" | "ai" | "system"; channel?: string; external_message_id?: string | null; sender_id: number | null; sender_name: string;
   content: string; meta: Record<string, unknown>; created_at: string;
 }
 

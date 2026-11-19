@@ -10,13 +10,39 @@ from server.services.realtime import publish
 
 def to_out(m: Message) -> MessageOut:
     name = m.sender.name if m.sender else ("TripMate AI" if m.kind == "ai" else "TripMate")
-    return MessageOut(id=m.id, trip_id=m.trip_id, kind=m.kind, sender_id=m.sender_id, sender_name=name,
-                      content=m.content, meta=m.meta or {}, created_at=m.created_at)
+    return MessageOut(
+        id=m.id,
+        trip_id=m.trip_id,
+        kind=m.kind,
+        channel=getattr(m, "channel", "web") or "web",
+        external_message_id=getattr(m, "external_message_id", None),
+        sender_id=m.sender_id,
+        sender_name=name,
+        content=m.content,
+        meta=m.meta or {},
+        created_at=m.created_at,
+    )
 
 
-def post(db: Session, trip_id: int, kind: str, content: str, sender_id: Optional[int] = None,
-         meta: Optional[dict] = None) -> Message:
-    m = Message(trip_id=trip_id, kind=kind, content=content, sender_id=sender_id, meta=meta or {})
+def post(
+    db: Session,
+    trip_id: int,
+    kind: str,
+    content: str,
+    sender_id: Optional[int] = None,
+    meta: Optional[dict] = None,
+    channel: str = "web",
+    external_message_id: Optional[str] = None,
+) -> Message:
+    m = Message(
+        trip_id=trip_id,
+        kind=kind,
+        content=content,
+        sender_id=sender_id,
+        meta=meta or {},
+        channel=channel,
+        external_message_id=external_message_id,
+    )
     db.add(m)
     db.commit()
     db.refresh(m)

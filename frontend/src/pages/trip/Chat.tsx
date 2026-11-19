@@ -54,11 +54,17 @@ function Bubble({ m, mine, tripPath }: { m: ChatMessage; mine: boolean; tripPath
     return <div className="my-2 text-center text-xs text-ink-500"><span className="rounded-full bg-sand-100 px-3 py-1">{m.content}</span></div>;
   const ai = m.kind === "ai";
   const err = ai && m.meta.error === true;
+  const isTg = m.channel === "telegram" || m.meta?.channel === "telegram";
   return (
     <div className={`flex items-end gap-2.5 ${mine ? "flex-row-reverse" : ""}`}>
       {!mine && (ai ? <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-lagoon-600 text-white"><Sparkles className="h-4 w-4" aria-hidden /></span> : <Avatar name={m.sender_name} />)}
       <div className={`max-w-[82%] rounded-2xl px-4 py-2.5 ${mine ? "rounded-br-md bg-lagoon-600 text-white" : err ? "rounded-bl-md border border-coral-500/30 bg-coral-100 text-coral-700" : ai ? "rounded-bl-md border border-lagoon-200 bg-lagoon-50" : "rounded-bl-md border border-sand-200 bg-white"}`}>
-        <p className={`mb-0.5 text-xs font-semibold ${mine ? "text-lagoon-100" : "text-ink-500"}`}>{mine ? "You" : m.sender_name} · <time dateTime={m.created_at}>{timeOf(m.created_at)}</time></p>
+        <p className={`mb-0.5 flex items-center flex-wrap gap-1 text-xs font-semibold ${mine ? "text-lagoon-100" : "text-ink-500"}`}>
+          <span>{mine ? "You" : m.sender_name}</span>
+          {isTg && <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-medium bg-sky-100 text-sky-800 border border-sky-200">Telegram</span>}
+          <span>·</span>
+          <time dateTime={m.created_at}>{timeOf(m.created_at)}</time>
+        </p>
         {ai ? <Markdown>{m.content}</Markdown> : <p className="whitespace-pre-wrap break-words text-[15px]">{m.content}</p>}
         {ai && m.meta.suggestion_id != null && <Link to={`${tripPath}/preferences`} className="mt-1.5 inline-flex rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-lagoon-800 underline">Review the preferences I noted</Link>}
       </div>

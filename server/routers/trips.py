@@ -42,14 +42,18 @@ def _detail(db: Session, trip: Trip, member: TripMember) -> TripDetail:
     skip = {"members", "member_count", "my_role", "last_accessed_at"}
     base = {k: getattr(trip, k) for k in TripDetail.model_fields if k not in skip}
     return TripDetail(**base, member_count=len(members), my_role=member.role, last_accessed_at=member.last_accessed_at,
-                      members=[MemberOut(user_id=m.user_id, name=m.user.name, role=m.role, joined_at=m.joined_at)
+                      members=[MemberOut(user_id=m.user_id, name=m.user.name, role=m.role,
+                                         channel_origin=getattr(m, "channel_origin", "web") or "web",
+                                         telegram_username=getattr(m, "telegram_username", None),
+                                         joined_at=m.joined_at)
                                for m in members])
 
 
 @router.post("", response_model=TripDetail, status_code=201)
 def create_trip(body: TripCreate, user: User = Depends(current_user), db: Session = Depends(get_db)):
     data = body.model_dump()
-    trip = Trip(**data, code=new_code(db), owner_id=user.id)
+    code = new_code(db)
+    trip = Trip(**data, code=code, trip_code=code, owner_id=user.id)
     db.add(trip)
     db.flush()
     member = TripMember(trip_id=trip.id, user_id=user.id, role="owner", last_accessed_at=utcnow())
@@ -75,7 +79,8 @@ def list_trips(user: User = Depends(current_user), db: Session = Depends(get_db)
 @router.get("/preview/{code}", response_model=TripPreview)
 def preview(code: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
     rate_limit(f"code:{user.id}", 30, 60)
-    trip = db.scalar(select(Trip).where(Trip.code == normalise_code(code)))
+    norm = normalise_code(code)
+    trip = db.scalar(select(Trip).where((Trip.code == norm) | (Trip.trip_code == norm)))
     if not trip:
         raise HTTPException(404, "That trip code doesn't match any trip. Check it and try again.")
     ids = [m.user_id for m in trip.members]
@@ -87,7 +92,8 @@ def preview(code: str, user: User = Depends(current_user), db: Session = Depends
 @router.post("/join", response_model=TripPreview)
 def join(body: JoinIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     rate_limit(f"code:{user.id}", 30, 60)
-    trip = db.scalar(select(Trip).where(Trip.code == normalise_code(body.code)))
+    norm = normalise_code(body.code)
+    trip = db.scalar(select(Trip).where((Trip.code == norm) | (Trip.trip_code == norm)))
     if not trip:
         raise HTTPException(404, "That trip code doesn't match any trip. Check it and try again.")
     ids = [m.user_id for m in trip.members]

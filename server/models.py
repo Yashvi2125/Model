@@ -49,6 +49,8 @@ class Trip(Base):
     )
     id: Mapped[int] = mapped_column(primary_key=True)
     code: Mapped[str] = mapped_column(sa.String(12), unique=True, index=True)
+    trip_code: Mapped[Optional[str]] = mapped_column(sa.String(32), index=True, nullable=True)
+    telegram_group_chat_id: Mapped[Optional[int]] = mapped_column(sa.BigInteger, index=True, nullable=True)
     name: Mapped[str] = mapped_column(sa.String(120))
     destination: Mapped[Optional[str]] = mapped_column(sa.String(120))
     destination_undecided: Mapped[bool] = mapped_column(default=False)
@@ -81,6 +83,9 @@ class TripMember(Base):
     trip_id: Mapped[int] = mapped_column(sa.ForeignKey("trips.id", ondelete="CASCADE"), index=True)
     user_id: Mapped[int] = mapped_column(sa.ForeignKey("users.id", ondelete="CASCADE"), index=True)
     role: Mapped[str] = mapped_column(sa.String(12), default="member")  # owner | member
+    telegram_user_id: Mapped[Optional[int]] = mapped_column(sa.BigInteger, index=True, nullable=True)
+    telegram_username: Mapped[Optional[str]] = mapped_column(sa.String(100), nullable=True)
+    channel_origin: Mapped[str] = mapped_column(sa.String(20), default="web")  # web | telegram
     joined_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
     last_accessed_at: Mapped[Optional[datetime]] = mapped_column(TS)
 
@@ -95,6 +100,8 @@ class Message(Base):
     trip_id: Mapped[int] = mapped_column(sa.ForeignKey("trips.id", ondelete="CASCADE"))
     sender_id: Mapped[Optional[int]] = mapped_column(sa.ForeignKey("users.id", ondelete="SET NULL"))
     kind: Mapped[str] = mapped_column(sa.String(10), default="user")  # user | ai | system
+    channel: Mapped[str] = mapped_column(sa.String(20), default="web")  # web | telegram
+    external_message_id: Mapped[Optional[str]] = mapped_column(sa.String(100), nullable=True)
     content: Mapped[str] = mapped_column(sa.Text)
     meta: Mapped[dict] = mapped_column(sa.JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(TS, default=utcnow)

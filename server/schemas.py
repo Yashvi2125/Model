@@ -166,6 +166,8 @@ class MemberOut(BaseModel):
     user_id: int
     name: str
     role: str
+    channel_origin: str = "web"
+    telegram_username: Optional[str] = None
     joined_at: datetime
 
 
@@ -238,6 +240,8 @@ class MessageOut(BaseModel):
     id: int
     trip_id: int
     kind: str
+    channel: str = "web"
+    external_message_id: Optional[str] = None
     sender_id: Optional[int]
     sender_name: str
     content: str

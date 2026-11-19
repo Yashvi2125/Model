@@ -1,0 +1,189 @@
+"""Unit and integration tests for Telegram bot adapter, identity mapping, and multi-platform sync."""
+import asyncio
+from datetime import date, timedelta
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from sqlalchemy import select
+
+from server.db import SessionLocal
+from server.models import Itinerary, Message, Trip, TripMember, User
+from server.services.message_bus import (
+    IncomingMessage,
+    handle_incoming_message,
+    set_telegram_sender,
+)
+from server.telegram.bot import chunk_message, escape_html
+from server.telegram.identity import (
+    bind_trip_to_chat,
+    ensure_trip_member,
+    get_or_create_telegram_user,
+    get_trip_by_chat_id,
+    get_trip_by_code,
+)
+
+
+def test_chunk_message_under_limit():
+    short = "Hello world"
+    assert chunk_message(short, max_size=100) == ["Hello world"]
+
+    # Test long string split
+    long_msg = "\n".join([f"Line {i}: Some detailed itinerary item information here." for i in range(100)])
+    chunks = chunk_message(long_msg, max_size=500)
+    assert len(chunks) > 1
+    for c in chunks:
+        assert len(c) <= 500
+
+
+def test_escape_html():
+    raw = "<script>alert('xss');</script> & \"bold\""
+    clean = escape_html(raw)
+    assert "<script>" not in clean
+    assert "&lt;script&gt;" in clean
+    assert "&amp;" in clean
+
+
+def test_telegram_identity_and_binding():
+    with SessionLocal() as db_session:
+        # 1. Telegram user creation
+        u1 = get_or_create_telegram_user(db_session, tg_user_id=1234567, full_name="Alice TG", username="alice_tg")
+        assert u1.email == "tg_1234567@telegram.user"
+        assert u1.name == "Alice TG"
+
+        # Idempotent retrieval
+        u1_again = get_or_create_telegram_user(db_session, tg_user_id=1234567, full_name="Alice TG Updated")
+        assert u1_again.id == u1.id
+        assert u1_again.name == "Alice TG Updated"
+
+        # 2. Trip creation & code lookup
+        trip = Trip(
+            name="Tokyo Test",
+            code="TESTCODE",
+            trip_code="TESTCODE",
+            destination="Tokyo",
+            start_date=date.today(),
+            end_date=date.today() + timedelta(days=5),
+            travelers_count=2,
+            owner_id=u1.id,
+        )
+        db_session.add(trip)
+        db_session.commit()
+
+        found = get_trip_by_code(db_session, "testcode")
+        assert found is not None
+        assert found.id == trip.id
+
+        # 3. Group chat binding
+        chat_id = -100987654321
+        bind_trip_to_chat(db_session, trip, chat_id)
+        assert get_trip_by_chat_id(db_session, chat_id).id == trip.id
+
+        # 4. Member registration
+        m = ensure_trip_member(db_session, trip.id, u1.id, tg_user_id=1234567, tg_username="alice_tg")
+        assert m.channel_origin == "telegram"
+        assert m.telegram_user_id == 1234567
+
+
+@pytest.mark.asyncio
+async def test_echo_loop_prevention_and_relay():
+    with SessionLocal() as db_session:
+        u = get_or_create_telegram_user(db_session, tg_user_id=999, full_name="Bob")
+        trip = Trip(
+            name="Paris Test",
+            code="PARIS123",
+            trip_code="PARIS123",
+            destination="Paris",
+            start_date=date.today(),
+            end_date=date.today() + timedelta(days=4),
+            owner_id=u.id,
+            telegram_group_chat_id=-10011223344,
+        )
+        db_session.add(trip)
+        db_session.commit()
+
+    relayed_messages = []
+
+    async def mock_tg_sender(chat_id, text):
+        relayed_messages.append((chat_id, text))
+
+    set_telegram_sender(mock_tg_sender)
+
+    # 1. Message from Telegram -> should NOT echo back to Telegram sender
+    tg_msg = IncomingMessage(
+        trip_id=trip.id,
+        user_id=u.id,
+        channel="telegram",
+        text="Bonjour from Telegram!",
+        sender_name="Bob",
+    )
+    await handle_incoming_message(tg_msg)
+    assert len(relayed_messages) == 0
+
+    # 2. Message from Web -> should relay to Telegram group
+    web_msg = IncomingMessage(
+        trip_id=trip.id,
+        user_id=u.id,
+        channel="web",
+        text="Hello from Web app!",
+        sender_name="Alice (Web)",
+    )
+    await handle_incoming_message(web_msg)
+    await asyncio.sleep(0.05)
+    assert len(relayed_messages) == 1
+    assert relayed_messages[0][0] == -10011223344
+    assert "Hello from Web app!" in relayed_messages[0][1]
+
+
+@pytest.mark.asyncio
+async def test_multi_platform_same_trip():
+    """Integration scenario: Two Telegram users + One web user join same trip and share itinerary."""
+    with SessionLocal() as db_session:
+        # Web owner creates trip
+        web_owner = User(name="Web Organizer", email="owner@web.test", password_hash="hash")
+        db_session.add(web_owner)
+        db_session.commit()
+
+        trip = Trip(
+            name="Kyoto Multi-Platform",
+            code="KYOTO888",
+            trip_code="KYOTO888",
+            destination="Kyoto",
+            start_date=date.today() + timedelta(days=10),
+            end_date=date.today() + timedelta(days=15),
+            travelers_count=3,
+            owner_id=web_owner.id,
+            telegram_group_chat_id=-100998877,
+        )
+        db_session.add(trip)
+        db_session.flush()
+        ensure_trip_member(db_session, trip.id, web_owner.id, role="owner")
+
+        # Telegram user 1 joins via code
+        tg_user1 = get_or_create_telegram_user(db_session, 1001, "Tanish TG", "tanishtg")
+        ensure_trip_member(db_session, trip.id, tg_user1.id, tg_user_id=1001, tg_username="tanishtg")
+
+        # Telegram user 2 joins via code
+        tg_user2 = get_or_create_telegram_user(db_session, 1002, "Bhakti TG", "bhaktitg")
+        ensure_trip_member(db_session, trip.id, tg_user2.id, tg_user_id=1002, tg_username="bhaktitg")
+
+        # Verify all 3 members are in the trip
+        members = db_session.scalars(select(TripMember).where(TripMember.trip_id == trip.id)).all()
+        assert len(members) == 3
+
+        # Add shared itinerary
+        itin = Itinerary(
+            trip_id=trip.id,
+            version=1,
+            status="succeeded",
+            plan_markdown="## Day 1: Arrive in Kyoto\n- Visit Fushimi Inari\n- Dinner in Gion",
+            days={"1": {"title": "Arrive in Kyoto"}},
+        )
+        db_session.add(itin)
+        db_session.commit()
+
+        # Verify latest itinerary is accessible by the trip
+        latest = db_session.scalar(
+            select(Itinerary).where(Itinerary.trip_id == trip.id, Itinerary.status == "succeeded")
+        )
+        assert latest.version == 1
+        assert "Fushimi Inari" in latest.plan_markdown

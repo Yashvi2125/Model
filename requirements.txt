@@ -8,3 +8,4 @@ pydantic>=2.0.0
 pytest>=8.0.0
 tiktoken>=0.8.0
 python-telegram-bot>=21.0
+google-adk>=2.14.0

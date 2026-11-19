@@ -10,9 +10,10 @@ from fastapi.responses import JSONResponse
 from server import runtime
 from server.ai.client import ai_status
 from server.config import get_settings
-from server.routers import auth, chat, checklist, conflicts, health, merge_preferences, planning, preferences, research, trips, users
+from server.routers import auth, chat, checklist, conflicts, health, merge_preferences, planning, preferences, research, telegram, trips, users
 from server.security import origin_allowed
 from server.services.itinerary_service import mark_stale_runs_failed
+from server.telegram.bot import start_telegram_service, stop_telegram_service
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("tripmate")
@@ -36,7 +37,20 @@ async def lifespan(_: FastAPI):
         log.error("Database is not reachable or not migrated yet (run `alembic upgrade head`).")
     s = ai_status()
     log.info("AI configured: gemini=%s tavily=%s model=%s", s["gemini_configured"], s["tavily_configured"], s["model"])
+
+    # Launch Telegram Bot service in background
+    if settings.telegram_bot_token:
+        try:
+            await start_telegram_service()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Failed to start Telegram service: %s", exc)
+
     yield
+
+    try:
+        await stop_telegram_service()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Error stopping Telegram service: %s", exc)
 
 
 settings = get_settings()
@@ -71,5 +85,5 @@ async def unhandled(_: Request, exc: Exception):
     return JSONResponse({"detail": "Something went wrong on our side. Please try again."}, status_code=500)
 
 
-for r in (health, auth, users, trips, chat, preferences, conflicts, planning, checklist, research, merge_preferences):
+for r in (health, auth, users, trips, chat, preferences, conflicts, planning, checklist, research, merge_preferences, telegram):
     app.include_router(r.router)

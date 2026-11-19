@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     # Comma-separated list of browser origins allowed to call state-changing endpoints.
     allowed_origins: str = "http://localhost:3000,http://localhost:5173"
 
+    # Telegram Bot & Multi-Platform Integration
+    telegram_bot_token: str = ""
+    telegram_bot_username: str = ""
+    telegram_mode: str = "polling"  # polling | webhook
+    telegram_webhook_secret: str = ""
+    public_base_url: str = "http://localhost:3000"
+    telegraph_access_token: str = ""
+
     # AI behaviour
     ai_auto_extract: bool = True  # suggest preferences from ordinary chat messages (never auto-applied)
     ai_timeout_seconds: int = 180

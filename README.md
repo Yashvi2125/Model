@@ -100,6 +100,97 @@ When running locally on different computers:
 
 ---
 
+## 🤖 Telegram Group Bot & Google ADK Integration
+
+TripMate AI includes a dual-interface architecture: members of the **SAME trip** can plan from a **Telegram Group** or from the **Web Chat Room**, and see each other's messages, preferences, and the same generated plan synchronized in real time!
+
+### 🌟 Features
+1. **Google ADK Travel Advisor Agent (`google-adk`)**: Powered by Gemini API with multi-turn conversational memory via ADK `SessionService`.
+2. **Platform Independence**: Web and Telegram users collaborate simultaneously with two-way message relay, Telegram badges on web UI, and shared trip state.
+3. **Rich Telegraph Itineraries (`telegra.ph`)**: Long itineraries are formatted and auto-published to clean, shareable Telegraph pages with inline buttons.
+4. **Passive Preference Extraction**: Quietly listens to natural conversation in the group to infer member travel preferences without spamming.
+5. **Interactive Controls**: Inline buttons to Approve plans, view budget breakdowns, and jump directly to the Web Dashboard.
+
+---
+
+### ⚙️ Bot Setup Guide with @BotFather
+
+1. **Create the Bot:**
+   - Open Telegram and message [@BotFather](https://t.me/BotFather).
+   - Send `/newbot`, name your bot (e.g., `TripMate AI`), and choose a username (e.g., `Tripmate_planner_bot`).
+   - Copy the HTTP API token into `.env` under `TELEGRAM_BOT_TOKEN`.
+
+2. **IMPORTANT: Disable Group Privacy Mode:**
+   - In [@BotFather](https://t.me/BotFather), send `/setprivacy`.
+   - Select your bot (`@Tripmate_planner_bot`).
+   - Choose **Disable**.
+   - *(Why? Telegram restricts bots to seeing only messages that mention them unless privacy mode is disabled. Disabling it allows TripMate AI to passively read preferences from the group conversation).*
+
+3. **Add Bot to Group:**
+   - Add `@Tripmate_planner_bot` to your trip group.
+
+---
+
+### 💬 Telegram Commands
+
+| Command | Description |
+| :--- | :--- |
+| `/start` | Welcome overview. With deep-link (`/start <CODE>`), instantly joins that trip. |
+| `/newtrip <destination>` | Creates a new trip, generates a Trip Code, and binds the Telegram group. |
+| `/jointrip <CODE>` | Connects this Telegram group to an existing trip (e.g. created on the web). |
+| `/plan [notes]` | Triggers the collaborative multi-agent workflow (Planner + Researcher). |
+| `/itinerary` | Displays the latest itinerary, Telegraph article link, and web buttons. |
+| `/budget` | Computes estimated costs and per-person breakdown. |
+| `/status` | Overview of collected member preferences, open conflicts, and readiness. |
+| `/members` | Lists all group members (with indicators for Web vs Telegram). |
+| `/weblink` | Direct link to view and edit the trip in the Web Dashboard. |
+| Natural chat / `@ai` | Chat naturally with the Google ADK Travel Advisor Agent with live typing actions. |
+
+---
+
+### 🛠 Running Locally vs. Production Deployment
+
+#### Local Development (Long-Polling Mode — Default)
+In `.env`:
+```env
+TELEGRAM_MODE=polling
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_BOT_USERNAME=Tripmate_planner_bot
+PUBLIC_BASE_URL=http://localhost:3000
+```
+Start the backend via `.\start_dev.ps1` or `run_app.bat`. The bot connects via long-polling immediately with zero tunnel required!
+
+#### Production Deployment (Webhook Mode)
+In `.env` or Render environment variables:
+```env
+TELEGRAM_MODE=webhook
+TELEGRAM_WEBHOOK_SECRET=your_random_secret_string
+PUBLIC_BASE_URL=https://your-domain.com
+```
+Set your webhook URL with Telegram:
+```bash
+curl -F "url=https://<your-backend-domain>/api/telegram/webhook" \
+     -F "secret_token=<TELEGRAM_WEBHOOK_SECRET>" \
+     https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook
+```
+
+---
+
+### 🎬 Interactive Demo Walkthrough
+1. **Web User:** Creates a trip *"Kyoto Expedition"* on `http://localhost:3000` (Trip Code: `KYOT8888`).
+2. **Telegram User:** In a Telegram group, types `/jointrip KYOT8888`.
+   - Bot replies: *"Connected to Kyoto Expedition! All group messages will now sync with the web planner."*
+3. **Collaboration:**
+   - Tanish in Telegram: *"I really want to visit Fushimi Inari and eat ramen."*
+   - Yashvi on Web: Sees the message live in chat marked with a **[Telegram]** badge.
+   - Yashvi replies on Web: *"Sounds awesome! Let's also visit Arashiyama Bamboo Grove."*
+   - The message instantly relays into the Telegram group: *"Yashvi (via web): Sounds awesome! Let's also visit Arashiyama Bamboo Grove."*
+4. **Planning:**
+   - Type `/plan` in Telegram or click *"Generate Itinerary"* on the web.
+   - The agents research live attractions, synthesize the itinerary, update the Web dashboard, and post the formatted plan in Telegram with a clean [Telegraph article link](https://telegra.ph) and approval buttons!
+
+---
+
 ## 🧩 Key Architecture
 
 | Module | Purpose |
