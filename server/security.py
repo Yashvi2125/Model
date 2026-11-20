@@ -57,12 +57,16 @@ def create_session(db: Session, user: User, remember: bool, user_agent: Optional
 
 
 def set_session_cookie(response: Response, token: str, max_age: int, remember: bool) -> None:
-    response.set_cookie(COOKIE_NAME, token, httponly=True, samesite="lax", path="/",
-                        secure=get_settings().cookie_secure, max_age=max_age if remember else None)
+    s = get_settings()
+    samesite = "none" if s.cookie_secure else "lax"
+    response.set_cookie(COOKIE_NAME, token, httponly=True, samesite=samesite, path="/",
+                        secure=s.cookie_secure, max_age=max_age if remember else None)
 
 
 def clear_session_cookie(response: Response) -> None:
-    response.delete_cookie(COOKIE_NAME, path="/")
+    s = get_settings()
+    samesite = "none" if s.cookie_secure else "lax"
+    response.delete_cookie(COOKIE_NAME, path="/", secure=s.cookie_secure, samesite=samesite)
 
 
 def user_from_token(db: Session, token: Optional[str]) -> Optional[User]:

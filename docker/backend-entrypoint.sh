@@ -4,4 +4,4 @@
 set -e
 python -m server.wait_for_db
 alembic upgrade head
-exec uvicorn server.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips="*"
+exec uvicorn server.main:app --host 0.0.0.0 --port "${PORT:-8000}" --proxy-headers --forwarded-allow-ips="*"

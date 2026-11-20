@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from server import runtime
@@ -45,6 +46,8 @@ async def lifespan(_: FastAPI):
     if settings.telegram_bot_token:
         try:
             await start_telegram_service()
+        except RuntimeError:
+            raise
         except Exception as exc:  # noqa: BLE001
             log.warning("Failed to start Telegram service: %s", exc)
 
@@ -60,6 +63,14 @@ settings = get_settings()
 app = FastAPI(title="Multi-Agent Group Trip Planner API", version="1.0.0", lifespan=lifespan,
               docs_url="/api/docs" if not settings.is_production else None,
               redoc_url=None, openapi_url="/api/openapi.json" if not settings.is_production else None)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.middleware("http")

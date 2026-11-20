@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     telegram_bot_username: str = ""
     telegram_mode: str = "polling"  # polling | webhook
     telegram_webhook_secret: str = ""
+    telegram_webhook_url: str = ""
     public_base_url: str = "http://localhost:3000"
     telegraph_access_token: str = ""
     relay_web_to_telegram: bool = True

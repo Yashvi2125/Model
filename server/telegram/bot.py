@@ -1101,8 +1101,30 @@ async def start_telegram_service():
     if settings.telegram_mode.lower() == "polling":
         await app.updater.start_polling(drop_pending_updates=True)
         log.info("Telegram Bot is listening via long-polling!")
+    elif settings.telegram_mode.lower() == "webhook":
+        if not settings.telegram_webhook_url or not settings.telegram_webhook_secret:
+            msg = "Telegram webhook mode requires both TELEGRAM_WEBHOOK_URL and TELEGRAM_WEBHOOK_SECRET."
+            log.error(msg)
+            raise RuntimeError(msg)
+
+        webhook_url = f"{settings.telegram_webhook_url.rstrip('/')}/api/telegram/webhook"
+        try:
+            await app.bot.set_webhook(
+                url=webhook_url,
+                secret_token=settings.telegram_webhook_secret,
+                drop_pending_updates=True,
+                allowed_updates=["message", "callback_query", "my_chat_member", "chat_member"],
+            )
+            log.info("Telegram Bot registered webhook at %s", webhook_url)
+        except Exception as exc:  # noqa: BLE001
+            safe_err = str(exc)
+            if settings.telegram_bot_token and settings.telegram_bot_token in safe_err:
+                safe_err = safe_err.replace(settings.telegram_bot_token, "[MASKED]")
+            if settings.telegram_webhook_secret and settings.telegram_webhook_secret in safe_err:
+                safe_err = safe_err.replace(settings.telegram_webhook_secret, "[MASKED]")
+            log.warning("Failed to register Telegram webhook: %s", safe_err)
     else:
-        log.info("Telegram Bot initialized in webhook mode.")
+        log.warning("Unknown telegram_mode '%s'. Expected 'polling' or 'webhook'.", settings.telegram_mode)
 
 
 async def stop_telegram_service():

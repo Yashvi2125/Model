@@ -44,7 +44,7 @@ def test_conflict_detection_votes_and_ai_failure(user_a, user_b, monkeypatch):
     cid = r["conflicts"][0]["id"]
     assert user_a.post(f"/api/trips/{tid}/conflicts/{cid}/vote", json={"vote": "agree"}).status_code == 400
 
-    async def ai(trip_ctx, detected):
+    async def ai(trip_ctx, detected, *args, **kwargs):
         return {"suggestions": {c["kind"]: f"Compromise for {c['kind']}" for c in detected}, "additional": []}
 
     monkeypatch.setattr("server.ai.agents.resolve_conflicts", ai)

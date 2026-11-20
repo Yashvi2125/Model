@@ -161,18 +161,49 @@ PUBLIC_BASE_URL=http://localhost:3000
 Start the backend via `.\start_dev.ps1` or `run_app.bat`. The bot connects via long-polling immediately with zero tunnel required!
 
 #### Production Deployment (Webhook Mode)
-In `.env` or Render environment variables:
-```env
-TELEGRAM_MODE=webhook
-TELEGRAM_WEBHOOK_SECRET=your_random_secret_string
-PUBLIC_BASE_URL=https://your-domain.com
-```
-Set your webhook URL with Telegram:
-```bash
-curl -F "url=https://<your-backend-domain>/api/telegram/webhook" \
-     -F "secret_token=<TELEGRAM_WEBHOOK_SECRET>" \
-     https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook
-```
+In production, the bot operates in webhook mode for high efficiency, receiving push updates from Telegram at `/api/telegram/webhook`.
+When `TELEGRAM_MODE=webhook`, the backend automatically registers the webhook with Telegram on startup using `TELEGRAM_WEBHOOK_URL` and `TELEGRAM_WEBHOOK_SECRET`.
+
+---
+
+## 🚀 Deployment Guide (Supabase + Render)
+
+### 1. Database: Supabase PostgreSQL
+1. Create a project at [supabase.com](https://supabase.com/).
+2. Under **Project Settings > Database > Connection string**, copy the **Session pooler** URI (port `5432`, not transaction pooler `6543`) with mode `sslmode=require`:
+   ```
+   postgresql+psycopg://postgres.[ref]:[password]@aws-0-[region].pooler.supabase.com:5432/postgres?sslmode=require
+   ```
+3. To transfer your local data into Supabase:
+   ```bash
+   docker compose exec -T db pg_dump -U tripmate -d tripmate --clean --if-exists --no-owner --no-privileges --encoding=UTF8 > backup.sql
+   psql "<supabase-session-pooler-uri>" < backup.sql
+   ```
+
+### 2. Telegram Bot Configuration (BotFather)
+1. Open [@BotFather](https://t.me/BotFather) on Telegram.
+2. Ensure group privacy is disabled so the bot can read trip chat messages:
+   - Run `/setprivacy` -> Select `@Tripmate_planner_bot` -> Select **Disable**.
+3. (Optional) Set group permissions:
+   - Run `/setjoingroups` -> Select **Enable**.
+
+### 3. Deploying to Render
+1. Connect your GitHub repository on [Render](https://render.com/).
+2. Render detects `render.yaml` (Blueprint) and provisions two services:
+   - **`tripmate-backend`** (Web Service, Docker runtime, 1 instance)
+   - **`tripmate-frontend`** (Static Site, React SPA with rewrite `/* -> /index.html`)
+3. Set the environment variables in the Render dashboard:
+   - **Backend:**
+     - `DATABASE_URL`: Your Supabase session pooler connection string.
+     - `SECRET_KEY`: Random 64-char string (`openssl rand -hex 32`).
+     - `ALLOWED_ORIGINS`: `https://<your-frontend>.onrender.com`.
+     - `PUBLIC_BASE_URL`: `https://<your-frontend>.onrender.com`.
+     - `TELEGRAM_WEBHOOK_URL`: `https://<your-backend>.onrender.com`.
+     - `TELEGRAM_WEBHOOK_SECRET`: Random 32-char string (`openssl rand -hex 16`).
+     - `TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`, `TAVILY_API_KEY`.
+   - **Frontend:**
+     - `VITE_API_BASE`: `https://<your-backend>.onrender.com`.
+4. Deploy! The backend automatically runs database migrations (`alembic upgrade head`) and registers the Telegram webhook on startup.
 
 ---
 
