@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     telegram_webhook_secret: str = ""
     public_base_url: str = "http://localhost:3000"
     telegraph_access_token: str = ""
+    relay_web_to_telegram: bool = True
 
     # AI behaviour
     ai_auto_extract: bool = True  # suggest preferences from ordinary chat messages (never auto-applied)

@@ -16,6 +16,9 @@ from server.services.itinerary_service import mark_stale_runs_failed
 from server.telegram.bot import start_telegram_service, stop_telegram_service
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
 log = logging.getLogger("tripmate")
 
 

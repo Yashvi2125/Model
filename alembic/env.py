@@ -18,7 +18,9 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    with engine.connect() as connection:
+    connectable = config.attributes.get("connection", engine)
+    connection = connectable.connect() if hasattr(connectable, "connect") else connectable
+    with connection:
         context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
         with context.begin_transaction():
             context.run_migrations()

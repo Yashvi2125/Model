@@ -1,12 +1,15 @@
+from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from server.config import get_settings
 from server.db import get_db
-from server.models import AuthSession, User
-from server.schemas import PasswordChange, ProfileUpdate, UserOut
+from server.models import AuthSession, User, utcnow
+from server.schemas import PasswordChange, ProfileUpdate, TelegramLinkCodeOut, UserOut
 from server.security import COOKIE_NAME, _token_hash, current_user, hash_password, rate_limit, verify_password
+from server.services.account_link import generate_link_code, unlink_telegram_account
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -43,3 +46,19 @@ def change_password(body: PasswordChange, request: Request, user: User = Depends
     keep = _token_hash(request.cookies.get(COOKIE_NAME, ""))
     db.execute(delete(AuthSession).where(AuthSession.user_id == user.id, AuthSession.token_hash != keep))  # sign out other devices
     db.commit()
+
+
+@router.post("/me/telegram-link-code", response_model=TelegramLinkCodeOut)
+def create_telegram_link_code(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    rate_limit(f"tg_code:{user.id}", 10, 60)
+    code = generate_link_code(db, user.id)
+    settings = get_settings()
+    bot_user = settings.telegram_bot_username.lstrip("@") or "Tripmate_planner_bot"
+    expires_at = utcnow() + timedelta(minutes=10)
+    return TelegramLinkCodeOut(code=code, expires_at=expires_at, bot_username=bot_user)
+
+
+@router.delete("/me/telegram-link", response_model=UserOut)
+def remove_telegram_link(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    unlink_telegram_account(db, user)
+    return user

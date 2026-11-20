@@ -1,6 +1,6 @@
 """Unit and integration tests for Telegram bot adapter, identity mapping, and multi-platform sync."""
 import asyncio
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -337,4 +337,596 @@ async def test_private_chat_newtrip_and_jointrip():
         await cmd_jointrip(mock_update, mock_context)
         reply_unknown = mock_msg.reply_text.call_args[0][0]
         assert "No trip found" in reply_unknown
+
+
+# ==============================================================================
+# SPECIFIC SCENARIO TESTS: ACCOUNT LINKING, MERGE, REBIND, RATE LIMIT, MIGRATION
+# ==============================================================================
+
+@pytest.mark.asyncio
+async def test_shared_trip_merge():
+    """Scenario 1: Shared trip merge - duplicate member row collapsed into web user."""
+    from server.models import Trip, TripMember, User
+    from server.services.account_link import generate_link_code, link_telegram_account
+
+    with SessionLocal() as db:
+        web_user = User(name="Alice Web", email="alice_shared@test.com", password_hash="h")
+        db.add(web_user)
+        db.commit()
+        db.refresh(web_user)
+
+        tg_id = 90001
+        syn_user = User(name="Alice Synth", email=f"tg_{tg_id}@telegram.user", password_hash="h")
+        db.add(syn_user)
+        db.commit()
+        db.refresh(syn_user)
+
+        trip = Trip(
+            name="Shared Trip", code="SHR01", start_date=date.today(),
+            end_date=date.today() + timedelta(days=4), owner_id=web_user.id
+        )
+        db.add(trip)
+        db.commit()
+
+        m_web = TripMember(trip_id=trip.id, user_id=web_user.id, role="owner", channel_origin="web")
+        m_syn = TripMember(trip_id=trip.id, user_id=syn_user.id, role="member", telegram_user_id=tg_id, channel_origin="telegram")
+        db.add_all([m_web, m_syn])
+        db.commit()
+
+        code = generate_link_code(db, web_user.id)
+        ok, msg, linked = link_telegram_account(db, code, tg_id, "alice_tg")
+        assert ok, msg
+        assert linked.telegram_user_id == tg_id
+
+        # Synthetic user deleted
+        assert db.get(User, syn_user.id) is None
+        # Trip has exactly 1 member for Alice
+        members = db.scalars(select(TripMember).where(TripMember.trip_id == trip.id)).all()
+        assert len(members) == 1
+        assert members[0].user_id == web_user.id
+        assert members[0].telegram_user_id == tg_id
+
+
+@pytest.mark.asyncio
+async def test_unshared_trip_merge():
+    """Scenario 2: Unshared trip merge - ownership and membership transferred to web user."""
+    from server.models import Trip, TripMember, User
+    from server.services.account_link import generate_link_code, link_telegram_account
+
+    with SessionLocal() as db:
+        web_user = User(name="Bob Web", email="bob_unshared@test.com", password_hash="h")
+        db.add(web_user)
+        db.commit()
+        db.refresh(web_user)
+
+        tg_id = 90002
+        syn_user = User(name="Bob Synth", email=f"tg_{tg_id}@telegram.user", password_hash="h")
+        db.add(syn_user)
+        db.commit()
+        db.refresh(syn_user)
+
+        trip = Trip(
+            name="Bob Solo Trip", code="SOLO02", start_date=date.today(),
+            end_date=date.today() + timedelta(days=3), owner_id=syn_user.id
+        )
+        db.add(trip)
+        db.commit()
+
+        m_syn = TripMember(trip_id=trip.id, user_id=syn_user.id, role="owner", telegram_user_id=tg_id)
+        db.add(m_syn)
+        db.commit()
+
+        code = generate_link_code(db, web_user.id)
+        ok, msg, linked = link_telegram_account(db, code, tg_id, "bob_tg")
+        assert ok, msg
+
+        db.refresh(trip)
+        assert trip.owner_id == web_user.id
+        members = db.scalars(select(TripMember).where(TripMember.trip_id == trip.id)).all()
+        assert len(members) == 1
+        assert members[0].user_id == web_user.id
+
+
+@pytest.mark.asyncio
+async def test_both_have_preferences_merge():
+    """Scenario 3: Both have preferences merge - keeps web row, fills empties, prefers newer on conflict."""
+    from server.models import Preference, Trip, TripMember, User
+    from server.services.account_link import generate_link_code, link_telegram_account
+
+    with SessionLocal() as db:
+        web_user = User(name="Carol Web", email="carol_pref@test.com", password_hash="h")
+        db.add(web_user)
+        db.commit()
+        db.refresh(web_user)
+
+        tg_id = 90003
+        syn_user = User(name="Carol Synth", email=f"tg_{tg_id}@telegram.user", password_hash="h")
+        db.add(syn_user)
+        db.commit()
+        db.refresh(syn_user)
+
+        trip = Trip(
+            name="Pref Merge Trip", code="PREF03", start_date=date.today(),
+            end_date=date.today() + timedelta(days=5), owner_id=web_user.id
+        )
+        db.add(trip)
+        db.commit()
+
+        # Web preference has older updated_at
+        pref_web = Preference(
+            trip_id=trip.id, user_id=web_user.id, destination="Old City",
+            interests=["hiking"], notes="Need quiet room",
+            updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        # Synth preference has newer updated_at and extra fields
+        pref_syn = Preference(
+            trip_id=trip.id, user_id=syn_user.id, destination="New City",
+            interests=["food"], budget_max=20000,
+            updated_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        )
+        db.add_all([pref_web, pref_syn])
+        db.commit()
+
+        code = generate_link_code(db, web_user.id)
+        ok, msg, _ = link_telegram_account(db, code, tg_id)
+        assert ok, msg
+
+        # Only 1 preference row left, assigned to web_user
+        prefs = db.scalars(select(Preference).where(Preference.trip_id == trip.id)).all()
+        assert len(prefs) == 1
+        p = prefs[0]
+        assert p.user_id == web_user.id
+        # Newer timestamp won the destination conflict
+        assert p.destination == "New City"
+        # Interests merged
+        assert "hiking" in p.interests and "food" in p.interests
+        # Backfilled budget_max
+        assert p.budget_max == 20000
+        # Retained notes
+        assert p.notes == "Need quiet room"
+
+
+@pytest.mark.asyncio
+async def test_idempotent_relink():
+    """Scenario 4: Idempotent re-link - linking same web user and tg_id again is a harmless no-op."""
+    from server.models import User
+    from server.services.account_link import generate_link_code, link_telegram_account
+
+    with SessionLocal() as db:
+        web_user = User(name="Dan Web", email="dan_relink@test.com", password_hash="h")
+        db.add(web_user)
+        db.commit()
+        db.refresh(web_user)
+
+        tg_id = 90004
+        code1 = generate_link_code(db, web_user.id)
+        ok1, _, _ = link_telegram_account(db, code1, tg_id)
+        assert ok1
+
+        # Second link with fresh code
+        code2 = generate_link_code(db, web_user.id)
+        ok2, msg2, _ = link_telegram_account(db, code2, tg_id)
+        assert ok2
+        assert "already linked" in msg2.lower()
+
+
+@pytest.mark.asyncio
+async def test_web_account_already_linked_to_different_telegram_id():
+    """Scenario 5: Web account already linked to another Telegram ID rejects new link."""
+    from server.models import User
+    from server.services.account_link import generate_link_code, link_telegram_account
+
+    with SessionLocal() as db:
+        web_user = User(name="Eve Web", email="eve_diff_tg@test.com", password_hash="h", telegram_user_id=11111)
+        db.add(web_user)
+        db.commit()
+        db.refresh(web_user)
+
+        code = generate_link_code(db, web_user.id)
+        ok, msg, _ = link_telegram_account(db, code, tg_user_id=22222)
+        assert not ok
+        assert "already linked to another telegram" in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_telegram_id_already_linked_to_different_web_account():
+    """Scenario 6: Telegram ID already linked to another web account rejects second web account."""
+    from server.models import User
+    from server.services.account_link import generate_link_code, link_telegram_account
+
+    with SessionLocal() as db:
+        user_a = User(name="User A", email="usera@test.com", password_hash="h", telegram_user_id=33333)
+        user_b = User(name="User B", email="userb@test.com", password_hash="h")
+        db.add_all([user_a, user_b])
+        db.commit()
+        db.refresh(user_b)
+
+        code = generate_link_code(db, user_b.id)
+        ok, msg, _ = link_telegram_account(db, code, tg_user_id=33333)
+        assert not ok
+        assert "already linked to web user 'user a'" in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_cmd_link_group_rejection():
+    """Scenario 7: /link in group refused for safety and deleted."""
+    from telegram import constants
+    from server.telegram.bot import cmd_link
+
+    mock_msg = AsyncMock()
+    mock_update = AsyncMock()
+    mock_update.effective_user = AsyncMock(id=55555)
+    mock_update.effective_chat = AsyncMock(id=-1008888, type=constants.ChatType.SUPERGROUP)
+    mock_update.effective_message = mock_msg
+    mock_update.message = mock_msg
+    mock_context = AsyncMock(args=["SOMECODE"])
+
+    await cmd_link(mock_update, mock_context)
+    assert mock_msg.delete.called
+    assert mock_msg.reply_text.called
+    assert "private chat" in mock_msg.reply_text.call_args[0][0].lower()
+
+
+@pytest.mark.asyncio
+async def test_expired_link_code_rejected():
+    """Scenario 8: Expired link code is rejected."""
+    from server.models import TelegramLinkCode, User, utcnow
+    from server.services.account_link import link_telegram_account
+
+    with SessionLocal() as db:
+        user = User(name="Frank", email="frank_exp@test.com", password_hash="h")
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+        # Code expired 5 minutes ago
+        code_rec = TelegramLinkCode(
+            user_id=user.id,
+            code="EXPIRE01",
+            created_at=utcnow() - timedelta(minutes=15),
+            expires_at=utcnow() - timedelta(minutes=5),
+        )
+        db.add(code_rec)
+        db.commit()
+
+        ok, msg, _ = link_telegram_account(db, "EXPIRE01", tg_user_id=44444)
+        assert not ok
+        assert "invalid or expired" in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_reused_link_code_rejected():
+    """Scenario 9: Reused link code is rejected."""
+    from server.models import TelegramLinkCode, User, utcnow
+    from server.services.account_link import link_telegram_account
+
+    with SessionLocal() as db:
+        user = User(name="Grace", email="grace_reused@test.com", password_hash="h")
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+        # Code already used
+        code_rec = TelegramLinkCode(
+            user_id=user.id,
+            code="REUSED01",
+            created_at=utcnow() - timedelta(minutes=5),
+            expires_at=utcnow() + timedelta(minutes=5),
+            used_at=utcnow() - timedelta(minutes=1),
+        )
+        db.add(code_rec)
+        db.commit()
+
+        ok, msg, _ = link_telegram_account(db, "REUSED01", tg_user_id=55555)
+        assert not ok
+        assert "invalid or expired" in msg.lower()
+
+
+def test_lockout_after_five_failed_attempts():
+    """Scenario 10: Lockout after 5 failed link attempts within 15 minutes."""
+    from server.services.account_link import (
+        clear_failed_attempts,
+        is_rate_limited,
+        link_telegram_account,
+        record_failed_attempt,
+    )
+
+    tg_id = 7777777
+    clear_failed_attempts(tg_id)
+    assert not is_rate_limited(tg_id)
+
+    # Record 5 failures
+    for _ in range(5):
+        record_failed_attempt(tg_id)
+    assert is_rate_limited(tg_id)
+
+    with SessionLocal() as db:
+        ok, msg, _ = link_telegram_account(db, "ANYCODE", tg_user_id=tg_id)
+        assert not ok
+        assert "too many" in msg.lower()
+    clear_failed_attempts(tg_id)
+
+
+@pytest.mark.asyncio
+async def test_group_rebind_notifications():
+    """Scenario 11: Group rebind notice when a group connects to a new trip or a trip moves groups."""
+    from server.models import Trip, User
+    from server.telegram.bot import cmd_jointrip
+    from telegram import constants
+
+    with SessionLocal() as db:
+        u = User(name="Rebind Owner", email="rebind@test.com", password_hash="h")
+        db.add(u)
+        db.commit()
+
+        trip_a = Trip(name="Old Trip", code="OLD01", start_date=date.today(), end_date=date.today() + timedelta(days=2), owner_id=u.id, telegram_group_chat_id=-100555)
+        trip_b = Trip(name="New Trip", code="NEW02", start_date=date.today(), end_date=date.today() + timedelta(days=2), owner_id=u.id)
+        db.add_all([trip_a, trip_b])
+        db.commit()
+        db.refresh(trip_b)
+
+        # Bot joins group -100555 with trip_b's code (switching from trip_a)
+        mock_msg = AsyncMock()
+        mock_update = AsyncMock()
+        mock_update.effective_user = AsyncMock(id=99999, full_name="User", username="u")
+        mock_update.effective_chat = AsyncMock(id=-100555, type=constants.ChatType.SUPERGROUP)
+        mock_update.effective_message = mock_msg
+        mock_context = AsyncMock(args=["NEW02"], user_data={})
+
+        await cmd_jointrip(mock_update, mock_context)
+        assert mock_msg.reply_text.called
+        reply = mock_msg.reply_text.call_args[0][0]
+        # Notice that group switched from Old Trip to New Trip
+        assert "previously connected to 'Old Trip'" in reply
+
+
+def test_relay_rate_limiter():
+    """Scenario 12: Web-to-telegram relay rate limiter (max 5 per 10s) and feature flag."""
+    from server.services.message_bus import check_can_relay, _relay_history
+
+    trip_id = 88888
+    _relay_history[trip_id] = []
+
+    # First 5 messages within sliding window allowed
+    for _ in range(5):
+        assert check_can_relay(trip_id) is True
+
+    # 6th message in same window is rate limited
+    assert check_can_relay(trip_id) is False
+
+
+@pytest.mark.asyncio
+async def test_supergroup_migration():
+    """Scenario 13: Supergroup migration updates telegram_group_chat_id."""
+    from server.models import Trip, User
+    from server.telegram.bot import handle_chat_migration
+
+    with SessionLocal() as db:
+        u = User(name="Mig Owner", email="mig_owner@test.com", password_hash="h")
+        db.add(u)
+        db.commit()
+        trip = Trip(
+            name="Mig Trip", code="MIG99", start_date=date.today(),
+            end_date=date.today() + timedelta(days=2), owner_id=u.id,
+            telegram_group_chat_id=-100111222,
+        )
+        db.add(trip)
+        db.commit()
+        db.refresh(trip)
+
+        mock_msg = AsyncMock()
+        mock_msg.migrate_from_chat_id = -100111222
+        mock_msg.migrate_to_chat_id = -100999888
+        mock_update = AsyncMock(message=mock_msg)
+        mock_context = AsyncMock()
+
+        await handle_chat_migration(mock_update, mock_context)
+
+        db.refresh(trip)
+        assert trip.telegram_group_chat_id == -100999888
+
+
+# ==============================================================================
+# WEB ENDPOINT TO TELEGRAM RELAY INTEGRATION TESTS
+# ==============================================================================
+
+def test_web_chat_endpoint_triggers_telegram_relay(user_a):
+    """POST /api/trips/{id}/messages triggers the registered Telegram relay function."""
+    import time
+    from tests.web.conftest import make_trip
+    from server.services.message_bus import set_telegram_sender, _relay_history
+
+    t = make_trip(user_a)
+    trip_id = t["id"]
+    _relay_history[trip_id] = []
+
+    # Bind group chat ID in DB
+    with SessionLocal() as db:
+        trip = db.get(Trip, trip_id)
+        trip.telegram_group_chat_id = -100998877
+        db.commit()
+
+    relayed = []
+
+    async def mock_sender(chat_id, text):
+        relayed.append((chat_id, text))
+
+    set_telegram_sender(mock_sender)
+
+    res = user_a.post(f"/api/trips/{trip_id}/messages", json={"content": "Hello from web planner!"})
+    assert res.status_code == 201
+    msg_data = res.json()
+    assert msg_data["content"] == "Hello from web planner!"
+
+    # Wait briefly for background task
+    time.sleep(0.1)
+    assert len(relayed) == 1
+    chat_id, text = relayed[0]
+    assert chat_id == -100998877
+    assert "Asha Patel (via web)" in text
+    assert "Hello from web planner!" in text
+
+
+def test_web_chat_relay_skipped_when_flag_false(user_a, monkeypatch):
+    """Relay is skipped when RELAY_WEB_TO_TELEGRAM is false."""
+    import time
+    from tests.web.conftest import make_trip
+    from server.config import get_settings
+    from server.services.message_bus import set_telegram_sender, _relay_history
+
+    t = make_trip(user_a)
+    trip_id = t["id"]
+    _relay_history[trip_id] = []
+
+    with SessionLocal() as db:
+        trip = db.get(Trip, trip_id)
+        trip.telegram_group_chat_id = -100998877
+        db.commit()
+
+    relayed = []
+
+    async def mock_sender(chat_id, text):
+        relayed.append((chat_id, text))
+
+    set_telegram_sender(mock_sender)
+    monkeypatch.setattr(get_settings(), "relay_web_to_telegram", False)
+
+    res = user_a.post(f"/api/trips/{trip_id}/messages", json={"content": "Should not relay"})
+    assert res.status_code == 201
+    time.sleep(0.05)
+    assert len(relayed) == 0
+
+
+def test_web_chat_relay_skipped_when_no_group(user_a):
+    """Relay is skipped when the trip has no bound Telegram group."""
+    import time
+    from tests.web.conftest import make_trip
+    from server.services.message_bus import set_telegram_sender
+
+    t = make_trip(user_a)
+    trip_id = t["id"]
+
+    relayed = []
+
+    async def mock_sender(chat_id, text):
+        relayed.append((chat_id, text))
+
+    set_telegram_sender(mock_sender)
+
+    res = user_a.post(f"/api/trips/{trip_id}/messages", json={"content": "No group trip message"})
+    assert res.status_code == 201
+    time.sleep(0.05)
+    assert len(relayed) == 0
+
+
+def test_web_chat_relay_rate_limited_after_5_messages(user_a):
+    """Web messages beyond 5 per 10s are dropped for Telegram, but still saved on web."""
+    import time
+    from tests.web.conftest import make_trip
+    from server.services.message_bus import set_telegram_sender, _relay_history
+
+    t = make_trip(user_a)
+    trip_id = t["id"]
+    _relay_history[trip_id] = []
+
+    with SessionLocal() as db:
+        trip = db.get(Trip, trip_id)
+        trip.telegram_group_chat_id = -100998877
+        db.commit()
+
+    relayed = []
+
+    async def mock_sender(chat_id, text):
+        relayed.append((chat_id, text))
+
+    set_telegram_sender(mock_sender)
+
+    # First 5 messages
+    for i in range(5):
+        r = user_a.post(f"/api/trips/{trip_id}/messages", json={"content": f"Msg {i}"})
+        assert r.status_code == 201
+
+    time.sleep(0.1)
+    assert len(relayed) == 5
+
+    # 6th message should be saved (201) but not relayed to Telegram
+    r6 = user_a.post(f"/api/trips/{trip_id}/messages", json={"content": "Msg 6 (rate limited)"})
+    assert r6.status_code == 201
+    time.sleep(0.1)
+    assert len(relayed) == 5  # No extra relay
+
+    # Verify message 6 is persisted in database
+    with SessionLocal() as db:
+        saved = db.scalars(select(Message).where(Message.trip_id == trip_id, Message.content == "Msg 6 (rate limited)")).first()
+        assert saved is not None
+
+
+def test_web_chat_relay_escapes_html_special_characters(user_a):
+    """Relay HTML escapes user name and message text (e.g. <b> and &)."""
+    import time
+    from tests.web.conftest import make_trip
+    from server.services.message_bus import set_telegram_sender, _relay_history
+
+    t = make_trip(user_a)
+    trip_id = t["id"]
+    _relay_history[trip_id] = []
+
+    with SessionLocal() as db:
+        trip = db.get(Trip, trip_id)
+        trip.telegram_group_chat_id = -100998877
+        db.commit()
+
+    relayed = []
+
+    async def mock_sender(chat_id, text):
+        relayed.append((chat_id, text))
+
+    set_telegram_sender(mock_sender)
+
+    raw_msg = "<script>alert('xss')</script> & <b>bold text</b>"
+    res = user_a.post(f"/api/trips/{trip_id}/messages", json={"content": raw_msg})
+    assert res.status_code == 201
+    time.sleep(0.1)
+
+    assert len(relayed) == 1
+    chat_id, text = relayed[0]
+    # Check that angle brackets and ampersands are escaped in the body
+    assert "&lt;script&gt;" in text
+    assert "&lt;b&gt;bold text&lt;/b&gt;" in text
+    assert "&amp;" in text
+    # The only raw HTML allowed is the bot's own formatting tags: <b>...</b>
+    assert not text.endswith("<b>bold text</b>")
+
+
+def test_web_chat_relay_task_failure_does_not_affect_web_response(user_a):
+    """If Telegram sender fails/raises, the web response is still 201 and message is saved."""
+    import time
+    from tests.web.conftest import make_trip
+    from server.services.message_bus import set_telegram_sender, _relay_history
+
+    t = make_trip(user_a)
+    trip_id = t["id"]
+    _relay_history[trip_id] = []
+
+    with SessionLocal() as db:
+        trip = db.get(Trip, trip_id)
+        trip.telegram_group_chat_id = -100998877
+        db.commit()
+
+    async def failing_sender(chat_id, text):
+        raise RuntimeError("Simulated Telegram API network connection failure")
+
+    set_telegram_sender(failing_sender)
+
+    res = user_a.post(f"/api/trips/{trip_id}/messages", json={"content": "Important saved message"})
+    assert res.status_code == 201
+    time.sleep(0.1)
+
+    # Message exists in DB
+    with SessionLocal() as db:
+        saved = db.scalars(select(Message).where(Message.trip_id == trip_id, Message.content == "Important saved message")).first()
+        assert saved is not None
+
+
+
 

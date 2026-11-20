@@ -1,4 +1,4 @@
-export interface User { id: number; name: string; email: string; created_at: string }
+export interface User { id: number; name: string; email: string; created_at: string; telegram_user_id?: number | null; telegram_username?: string | null }
 
 export interface TripSummary {
   id: number; code: string; name: string; destination: string | null; destination_undecided: boolean;

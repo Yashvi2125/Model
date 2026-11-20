@@ -78,6 +78,14 @@ class UserOut(ORM):
     name: str
     email: str
     created_at: datetime
+    telegram_user_id: Optional[int] = None
+    telegram_username: Optional[str] = None
+
+
+class TelegramLinkCodeOut(BaseModel):
+    code: str
+    expires_at: datetime
+    bot_username: str
 
 
 class ProfileUpdate(BaseModel):

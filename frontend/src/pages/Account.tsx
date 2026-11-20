@@ -1,11 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
-import { CheckCircle2, CircleX, LogOut } from "lucide-react";
+import { CheckCircle2, CircleX, LogOut, Send } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { Alert, Avatar, Button, Input } from "../components/ui";
 import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/Toast";
-import { ApiError, api, errorMessage, patch, post } from "../lib/api";
+import { ApiError, api, del, errorMessage, patch, post } from "../lib/api";
 import { shortDate } from "../lib/format";
 import type { AIStatus, User } from "../lib/types";
 import { emailValid, passwordChecks, passwordValid } from "../lib/validation";
@@ -19,6 +19,39 @@ export function Profile() {
   const [email, setEmail] = useState(user!.email);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
+
+  // Telegram link state
+  const [linkCode, setLinkCode] = useState<string | null>(null);
+  const [botUsername, setBotUsername] = useState("Tripmate_planner_bot");
+  const [generatingCode, setGeneratingCode] = useState(false);
+  const [unlinking, setUnlinking] = useState(false);
+
+  const handleGenerateCode = async () => {
+    setGeneratingCode(true);
+    try {
+      const res = await post<{ code: string; expires_at: string; bot_username: string }>("/api/users/me/telegram-link-code");
+      setLinkCode(res.code);
+      if (res.bot_username) setBotUsername(res.bot_username);
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setGeneratingCode(false);
+    }
+  };
+
+  const handleDisconnectTelegram = async () => {
+    setUnlinking(true);
+    try {
+      const updated = await del<User>("/api/users/me/telegram-link");
+      if (updated) setUser(updated);
+      setLinkCode(null);
+      toast.success("Telegram account disconnected.");
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setUnlinking(false);
+    }
+  };
 
   const save = async (e: FormEvent) => {
     e.preventDefault();
@@ -46,6 +79,92 @@ export function Profile() {
           <Button type="submit" loading={busy}>Save changes</Button>
         </form>
       </div>
+
+      {/* Telegram Account Linking Card */}
+      <div className="card mt-6 p-6">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-sky-100 text-sky-600">
+              <Send className="h-5 w-5" />
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold">Telegram Integration</h2>
+              <p className="text-sm text-ink-500">
+                Connect your account to plan trips via Telegram groups and direct messages.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {user?.telegram_user_id ? (
+          <div className="mt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4 rounded-lg bg-lagoon-50 border border-lagoon-200 p-4">
+            <div>
+              <p className="text-sm font-semibold text-lagoon-900">
+                Connected to Telegram
+              </p>
+              <p className="text-xs text-lagoon-700 mt-0.5">
+                {user.telegram_username ? `@${user.telegram_username}` : `Telegram ID: ${user.telegram_user_id}`}
+              </p>
+            </div>
+            <Button
+              variant="secondary"
+              loading={unlinking}
+              onClick={handleDisconnectTelegram}
+              className="text-coral-600 hover:text-coral-700"
+            >
+              Disconnect
+            </Button>
+          </div>
+        ) : (
+          <div className="mt-4 space-y-4">
+            {!linkCode ? (
+              <div>
+                <p className="text-sm text-ink-600 mb-3">
+                  Link your account to seamlessly chat with the bot in your trip groups and have your messages sync with this dashboard.
+                </p>
+                <Button onClick={handleGenerateCode} loading={generatingCode}>
+                  Connect Telegram Account
+                </Button>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-sky-200 bg-sky-50 p-4 space-y-3">
+                <p className="text-sm font-medium text-sky-900">
+                  Step 1: Open a private chat with{" "}
+                  <a
+                    href={`https://t.me/${botUsername}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="underline font-semibold"
+                  >
+                    @{botUsername}
+                  </a>
+                </p>
+                <p className="text-sm font-medium text-sky-900">
+                  Step 2: Send this command to the bot:
+                </p>
+                <div className="flex items-center gap-2">
+                  <code className="flex-1 rounded bg-white px-3 py-2 font-mono text-sm border border-sky-300 font-bold select-all">
+                    /link {linkCode}
+                  </code>
+                  <Button
+                    variant="secondary"
+                    onClick={() => {
+                      navigator.clipboard.writeText(`/link ${linkCode}`);
+                      toast.success("Command copied to clipboard!");
+                    }}
+                  >
+                    Copy
+                  </Button>
+                </div>
+                <p className="text-xs text-sky-700">
+                  ⏳ This code expires in 10 minutes and can only be used once. Send it in a direct message, not in a group.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       <div className="card mt-6 flex items-center justify-between gap-4 p-6">
         <div><h2 className="text-lg font-semibold">Log out</h2><p className="text-sm text-ink-500">Ends this session on this device.</p></div>
         <Button variant="secondary" onClick={async () => { await logout(); navigate("/", { replace: true }); }}><LogOut className="h-4 w-4" />Log out</Button>

@@ -15,7 +15,21 @@ log = logging.getLogger("tripmate.telegram.identity")
 def get_or_create_telegram_user(
     db: Session, tg_user_id: int, full_name: str, username: Optional[str] = None
 ) -> User:
-    """Finds or creates a backend User row corresponding to a Telegram user."""
+    """Finds or creates a backend User row corresponding to a Telegram user.
+    Prioritises linked web accounts (User.telegram_user_id == tg_user_id).
+    Falls back to synthetic user (tg_<id>@telegram.user).
+    """
+    # 1. Check for linked web account
+    linked_user = db.scalar(
+        select(User).where(User.telegram_user_id == tg_user_id, ~User.email.endswith("@telegram.user"))
+    )
+    if linked_user:
+        if username and linked_user.telegram_username != username:
+            linked_user.telegram_username = username
+            db.commit()
+        return linked_user
+
+    # 2. Check for synthetic user
     email = f"tg_{tg_user_id}@telegram.user"
     user = db.scalar(select(User).where(User.email == email))
     if not user:
@@ -24,12 +38,15 @@ def get_or_create_telegram_user(
             email=email,
             name=display_name[:100],
             password_hash=hash_password(secrets.token_urlsafe(24)),
+            telegram_username=username,
         )
         db.add(user)
         db.commit()
         db.refresh(user)
     elif full_name and user.name != full_name:
         user.name = full_name[:100]
+        if username:
+            user.telegram_username = username
         db.commit()
     return user
 

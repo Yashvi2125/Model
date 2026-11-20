@@ -27,7 +27,21 @@ class User(Base):
     name: Mapped[str] = mapped_column(sa.String(100))
     email: Mapped[str] = mapped_column(sa.String(254), unique=True, index=True)  # stored lowercase
     password_hash: Mapped[str] = mapped_column(sa.String(255))
+    telegram_user_id: Mapped[Optional[int]] = mapped_column(sa.BigInteger, unique=True, index=True, nullable=True)
+    telegram_username: Mapped[Optional[str]] = mapped_column(sa.String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
+
+
+class TelegramLinkCode(Base):
+    __tablename__ = "telegram_link_codes"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(sa.ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    code: Mapped[str] = mapped_column(sa.String(32), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(TS, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(TS)
+    used_at: Mapped[Optional[datetime]] = mapped_column(TS, nullable=True)
+
+    user: Mapped[User] = relationship()
 
 
 class AuthSession(Base):

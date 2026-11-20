@@ -35,6 +35,7 @@ from server.services import itinerary_service as itin_svc
 from server.services import messages as msgs
 from server.services import preferences as pref_svc
 from server.services.budget import compute_budget
+from server.services.account_link import link_telegram_account
 from server.services.message_bus import (
     IncomingMessage,
     get_trip_lock,
@@ -278,6 +279,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• <code>/plan</code> - Generate a complete multi-agent itinerary\n"
         "• <code>/itinerary</code> - View the latest saved trip plan\n"
         "• <code>/budget</code> - View the estimated budget breakdown\n"
+        "• <code>/link CODE</code> - Link to your web account\n"
         "• <code>/weblink</code> - Direct link to the web interface\n\n"
         "<i>Plan directly here in DM, or add me to your group and plan together!</i>"
     )
@@ -415,8 +417,22 @@ async def cmd_jointrip(update: Update, context: ContextTypes.DEFAULT_TYPE):
         was_already_member = existing_member is not None
         ensure_trip_member(db, trip.id, user.id, tg_user.id, tg_user.username)
 
-        # Bind group chat if in a group
+        # Bind group chat if in a group with rebind detection
+        rebind_notices = []
         if is_group:
+            prev_bound_trip = db.scalar(
+                select(Trip).where(Trip.telegram_group_chat_id == chat_id, Trip.id != trip.id)
+            )
+            if prev_bound_trip:
+                rebind_notices.append(
+                    f"ℹ️ <i>Notice: This group was previously connected to '{escape_html(prev_bound_trip.name)}'. "
+                    f"It has now been switched to '{escape_html(trip.name)}'.</i>"
+                )
+            if trip.telegram_group_chat_id and trip.telegram_group_chat_id != chat_id:
+                rebind_notices.append(
+                    "ℹ️ <i>Notice: This trip was previously linked to another Telegram chat. "
+                    "It is now bound to this group.</i>"
+                )
             bind_trip_to_chat(db, trip, chat_id)
 
         # Always record as active trip in user_data
@@ -446,15 +462,18 @@ async def cmd_jointrip(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else "This trip is now your active trip. Use /status or /itinerary to check details."
             )
 
-        reply = (
-            f"{status_heading}\n\n"
-            f"📍 <b>Destination:</b> {escape_html(trip.destination or 'Undecided')}\n"
-            f"📅 <b>Dates:</b> {trip.start_date} to {trip.end_date}\n"
-            f"🔑 <b>Trip Code:</b> <code>{trip.code}</code>\n"
-            f"👥 <b>Total Members:</b> {len(trip.members)}\n"
-            f"🌐 <b>Web Dashboard:</b> {web_url}\n\n"
-            f"{scope_notice}"
-        )
+        reply_parts = [
+            f"{status_heading}\n",
+            f"📍 <b>Destination:</b> {escape_html(trip.destination or 'Undecided')}",
+            f"📅 <b>Dates:</b> {trip.start_date} to {trip.end_date}",
+            f"🔑 <b>Trip Code:</b> <code>{trip.code}</code>",
+            f"👥 <b>Total Members:</b> {len(trip.members)}",
+            f"🌐 <b>Web Dashboard:</b> {web_url}\n",
+            scope_notice,
+        ]
+        if rebind_notices:
+            reply_parts.extend(["", *rebind_notices])
+        reply = "\n".join(reply_parts)
         log.info(
             "CMD /jointrip trip_id=%s code=%s user_id=%s was_member=%s is_group=%s outcome=success",
             trip.id,
@@ -464,6 +483,53 @@ async def cmd_jointrip(update: Update, context: ContextTypes.DEFAULT_TYPE):
             is_group,
         )
         await send_safe_reply(update, reply, reply_markup=keyboard)
+
+
+async def cmd_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Links a Telegram account to a TripMate web account using a one-time code.
+    Private chat only for security. Deletes the /link message immediately.
+    """
+    if not update.effective_user or not update.effective_chat:
+        return
+    chat_type = update.effective_chat.type
+    is_private = chat_type == constants.ChatType.PRIVATE
+
+    # Delete message immediately so the link code doesn't stay in chat history
+    if update.message:
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+
+    # Reject if called in a group
+    if not is_private:
+        await send_safe_reply(
+            update,
+            "🔒 <b>For your safety, send <code>/link</code> in a private chat with me.</b>",
+        )
+        return
+
+    if not context.args:
+        await send_safe_reply(
+            update,
+            "⚠️ Please provide your link code from the web app:\n<code>/link YOUR_CODE</code>\n\n"
+            "<i>Visit your Profile on the web dashboard to generate a one-time link code.</i>",
+        )
+        return
+
+    raw_code = " ".join(context.args).strip()
+    tg_user = update.effective_user
+
+    with SessionLocal() as db:
+        success, reply_text, _ = link_telegram_account(
+            db=db,
+            code_str=raw_code,
+            tg_user_id=tg_user.id,
+            tg_username=tg_user.username,
+            tg_full_name=tg_user.full_name,
+        )
+
+    await send_safe_reply(update, reply_text)
 
 
 async def cmd_weblink(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -891,8 +957,15 @@ async def handle_group_message(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # 2. Check if we should reply actively:
     bot_username = (context.bot.username or "").lower()
+    is_reply_to_bot = (
+        update.message.reply_to_message is not None
+        and update.message.reply_to_message.from_user is not None
+        and context.bot is not None
+        and update.message.reply_to_message.from_user.id == context.bot.id
+    )
     is_mention = (
         is_private
+        or is_reply_to_bot
         or f"@{bot_username}" in text.lower()
         or "@ai" in text.lower()
         or "@tripmate" in text.lower()
@@ -958,6 +1031,22 @@ async def send_to_telegram_chat(chat_id: int, html_text: str):
         log.warning("Failed to send message to Telegram chat %s: %s", chat_id, exc)
 
 
+async def handle_chat_migration(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Updates telegram_group_chat_id when a group is upgraded to a supergroup."""
+    msg = update.message
+    if not msg:
+        return
+    old_id = msg.migrate_from_chat_id or msg.chat_id
+    new_id = msg.migrate_to_chat_id
+    if new_id and old_id:
+        with SessionLocal() as db:
+            trips = db.scalars(select(Trip).where(Trip.telegram_group_chat_id == old_id)).all()
+            for t in trips:
+                t.telegram_group_chat_id = new_id
+            db.commit()
+            log.info("Migrated Telegram chat %s -> %s for %s trip(s)", old_id, new_id, len(trips))
+
+
 # --- Application Setup & Lifecycle --------------------------------------------
 
 def build_telegram_app() -> Optional[Application]:
@@ -974,12 +1063,16 @@ def build_telegram_app() -> Optional[Application]:
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("newtrip", cmd_newtrip))
     app.add_handler(CommandHandler("jointrip", cmd_jointrip))
+    app.add_handler(CommandHandler("link", cmd_link))
     app.add_handler(CommandHandler("plan", cmd_plan))
     app.add_handler(CommandHandler("itinerary", cmd_itinerary))
     app.add_handler(CommandHandler("budget", cmd_budget))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("members", cmd_members))
     app.add_handler(CommandHandler("weblink", cmd_weblink))
+
+    # Migration handler
+    app.add_handler(MessageHandler(filters.StatusUpdate.MIGRATE, handle_chat_migration))
 
     # Inline callbacks
     app.add_handler(CallbackQueryHandler(handle_callback_query))
