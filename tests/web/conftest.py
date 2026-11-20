@@ -1,14 +1,11 @@
-"""Fixtures for the web backend tests.
-
-Runs against SQLite by default so it works anywhere; set TEST_DATABASE_URL to a PostgreSQL URL
-(e.g. postgresql+psycopg://tripmate:...@localhost:5432/tripmate_test) to run the same tests on PostgreSQL.
-"""
+"""Fixtures for the web backend tests."""
 import os
-import tempfile
 import time
 
-_default = "sqlite:///" + os.path.join(tempfile.gettempdir(), "tripmate_pytest.db")
-os.environ["DATABASE_URL"] = os.environ.get("TEST_DATABASE_URL", _default)
+from tests.db_guard import setup_test_database, verify_test_database_safety
+
+# Ensures test DB is configured even if tests/web is invoked directly without parent conftest
+setup_test_database()
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -23,6 +20,7 @@ PASSWORD = "Sup3rSecret!"
 
 @pytest.fixture(autouse=True)
 def fresh_db():
+    verify_test_database_safety(engine.url)
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     reset_rate_limits()

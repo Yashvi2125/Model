@@ -222,6 +222,30 @@ When `TELEGRAM_MODE=webhook`, the backend automatically registers the webhook wi
 
 ---
 
+## 🧪 Running Automated Tests
+
+TripMate includes an isolated, safe test suite with built-in database protection guards.
+
+### Running in Docker (PostgreSQL)
+Tests automatically detect PostgreSQL and use a separate, dedicated `tripmate_test` database (auto-created if missing). Your live `tripmate` database data is never touched:
+```bash
+docker compose exec backend pytest tests/web/
+```
+
+### Running Locally (SQLite)
+Without Docker or Postgres, tests automatically run against an isolated temporary SQLite database:
+```bash
+pytest tests/web/
+```
+
+### 🛡️ Database Safety Guard
+The test runner includes an automated hard guard (`tests/db_guard.py`):
+1. **Name Check:** Verifies that the test database name ends with `_test`.
+2. **Anti-Collision Check:** Confirms the test database does not equal the live `DATABASE_URL` database.
+3. **Pre-Drop Verification:** Right before `Base.metadata.drop_all()`, the fixture verifies the active SQLAlchemy engine connection. If any check fails, the runner aborts with a `RuntimeError` before any table or row can be touched.
+
+---
+
 ## 🧩 Key Architecture
 
 | Module | Purpose |
