@@ -66,10 +66,10 @@ export default function Landing() {
             <a href="#features" className="hover:text-lagoon-700">Features</a>
             <a href="#how-it-works" className="hover:text-lagoon-700">How it works</a>
           </nav>
-          <div className="flex items-center gap-2">
-            {user ? <Link to="/app" className="btn-primary">Open dashboard</Link> : <>
-              <Link to="/login" className="btn-ghost">Log in</Link>
-              <Link to="/register" className="btn-primary">Create account</Link></>}
+          <div className="flex items-center gap-1.5 sm:gap-2">
+            {user ? <Link to="/app" className="btn-primary text-sm sm:text-[15px]">Open dashboard</Link> : <>
+              <Link to="/login" className="btn-ghost px-2.5 py-1.5 text-sm sm:px-4 sm:py-2.5 sm:text-[15px]">Log in</Link>
+              <Link to="/register" className="btn-primary px-3 py-1.5 text-sm sm:px-4 sm:py-2.5 sm:text-[15px]">Create account</Link></>}
           </div>
         </div>
       </header>
@@ -81,9 +81,9 @@ export default function Landing() {
             <p className="mt-6 max-w-xl text-lg leading-relaxed text-ink-700">
               Bring everyone’s travel preferences, budgets and ideas together. Let AI help your group find common ground and create a trip everyone can enjoy.
             </p>
-            <div className="mt-8 flex flex-wrap gap-3">
-              <Link to={user ? "/app/trips/new" : "/register"} className="btn-primary px-6 py-3 text-base">Start Planning</Link>
-              <a href="#how-it-works" className="btn-secondary px-6 py-3 text-base">Explore How It Works</a>
+            <div className="mt-8 flex flex-col sm:flex-row flex-wrap gap-3">
+              <Link to={user ? "/app/trips/new" : "/register"} className="btn-primary px-6 py-3 text-base text-center">Start Planning</Link>
+              <a href="#how-it-works" className="btn-secondary px-6 py-3 text-base text-center">Explore How It Works</a>
             </div>
           </div>
           <HeroScene />

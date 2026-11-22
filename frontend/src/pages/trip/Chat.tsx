@@ -111,9 +111,9 @@ export default function Chat() {
   let lastDay = "";
   return (
     <div className="grid gap-5 lg:grid-cols-[1fr_17rem]">
-      <section className="card flex h-[calc(100dvh-15rem)] min-h-[26rem] flex-col overflow-hidden" aria-label="Group chat">
+      <section className="card flex h-[calc(100dvh-13rem)] sm:h-[calc(100dvh-15rem)] min-h-[26rem] flex-col overflow-hidden" aria-label="Group chat">
         <div className="no-print flex items-center justify-between border-b border-sand-200 px-4 py-2.5 lg:hidden">
-          <button className="flex items-center gap-1.5 text-sm font-semibold text-lagoon-800" aria-expanded={panel} onClick={() => setPanel((p) => !p)}>
+          <button className="flex items-center gap-1.5 text-sm font-semibold text-lagoon-800 min-h-[44px]" aria-expanded={panel} onClick={() => setPanel((p) => !p)}>
             Group info <ChevronDown className={`h-4 w-4 transition-transform ${panel ? "rotate-180" : ""}`} /></button>
           <span className="text-xs text-ink-500">{socket.online.length} online</span>
         </div>
@@ -143,14 +143,14 @@ export default function Chat() {
           <div ref={endRef} />
         </div>
 
-        <div className="no-print border-t border-sand-200 p-3">
+        <div className="no-print border-t border-sand-200 p-3 bg-white">
           <div className="mb-2 flex flex-wrap gap-1.5">{starters.map((s) => <button key={s} className="chip !py-1 text-xs" onClick={() => { setText(s); taRef.current?.focus(); }}>{s.length > 38 ? s.slice(0, 36) + "…" : s}</button>)}</div>
           <div className="flex items-end gap-2">
-            <button type="button" className="btn-secondary !p-2.5" onClick={insertAi} aria-label="Mention TripMate AI" title="Mention TripMate AI"><AtSign className="h-5 w-5" /></button>
+            <button type="button" className="btn-secondary !p-0 h-11 w-11 shrink-0 flex items-center justify-center rounded-xl" onClick={insertAi} aria-label="Mention TripMate AI" title="Mention TripMate AI"><AtSign className="h-5 w-5" /></button>
             <label className="sr-only" htmlFor="chat-input">Message</label>
             <textarea id="chat-input" ref={taRef} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={onKey} rows={1} maxLength={4000}
               placeholder="Message your group — mention @ai to talk to TripMate AI" className="input max-h-36 min-h-[44px] resize-none" />
-            <button type="button" onClick={submit} disabled={!text.trim()} className="btn-primary !p-2.5" aria-label="Send message"><Send className="h-5 w-5" /></button>
+            <button type="button" onClick={submit} disabled={!text.trim()} className="btn-primary !p-0 h-11 w-11 shrink-0 flex items-center justify-center rounded-xl disabled:opacity-40" aria-label="Send message"><Send className="h-5 w-5" /></button>
           </div>
           <p className="mt-1.5 text-xs text-ink-400">Enter to send · Shift+Enter for a new line. Only messages that mention @ai get a reply; other messages may be scanned for preferences you’ll be asked to confirm.</p>
         </div>

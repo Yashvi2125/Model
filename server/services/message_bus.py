@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import html
 import logging
+import re
 import time
 from typing import Optional
 
@@ -54,6 +55,74 @@ def set_telegram_sender(func):
     """Registers an async function to send messages to Telegram (telegram_chat_id, text)."""
     global _telegram_sender_func
     _telegram_sender_func = func
+
+
+def markdown_to_telegram_html(text: str) -> str:
+    """Converts Markdown text to Telegram-compatible HTML.
+    Escapes raw HTML characters first so no unescaped tags or entities break Telegram parse mode.
+    """
+    if not text:
+        return ""
+
+    # 1. Escape literal HTML characters first
+    out = html.escape(text, quote=False)
+
+    # 2. Code blocks: ```lang\ncode``` or ```code```
+    out = re.sub(r"```(?:[a-zA-Z0-9_-]+)?\n?(.*?)```", r"<pre><code>\1</code></pre>", out, flags=re.DOTALL)
+
+    # 3. Inline code: `code`
+    out = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", out)
+
+    # 4. Bold: **text** or __text__
+    out = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", out, flags=re.DOTALL)
+    out = re.sub(r"__(.+?)__", r"<b>\1</b>", out, flags=re.DOTALL)
+
+    # 5. Italic: *text* or _text_
+    out = re.sub(r"(?<!\w)\*([^*\n]+?)\*(?!\w)", r"<i>\1</i>", out)
+    out = re.sub(r"(?<!\w)_([^_\n]+?)_(?!\w)", r"<i>\1</i>", out)
+
+    # 6. Strikethrough: ~~text~~
+    out = re.sub(r"~~(.+?)~~", r"<s>\1</s>", out, flags=re.DOTALL)
+
+    # 7. Links: [label](url)
+    out = re.sub(r"\[([^\]]+)\]\((https?://[^\s)]+)\)", r'<a href="\2">\1</a>', out)
+
+    # 8. Headings: ## Heading -> <b>Heading</b>
+    out = re.sub(r"^\s*#{1,6}\s*(.+)$", r"<b>\1</b>", out, flags=re.MULTILINE)
+
+    # 9. Bullet lists: * item or - item -> • item
+    out = re.sub(r"^\s*[\*\-]\s+(.+)$", r"• \1", out, flags=re.MULTILINE)
+
+    return out.strip()
+
+
+def relay_ai_reply(trip_id: int, text: str, tg_chat_id: Optional[int] = None) -> None:
+    """Relays an AI assistant response to the bound Telegram group.
+    Uses 'TripMate AI' label (NOT via web), converts Markdown to Telegram-safe HTML,
+    and logs delivery warnings without raising.
+    """
+    if not tg_chat_id or not _telegram_sender_func:
+        return
+    if not check_can_relay(trip_id):
+        return
+
+    clean_text = (text or "").strip()
+    if not clean_text:
+        return
+
+    formatted_html = markdown_to_telegram_html(clean_text)
+    relay_html = f"🤖 <b>TripMate AI:</b>\n\n{formatted_html}"
+
+    async def _safe_send():
+        try:
+            await _telegram_sender_func(tg_chat_id, relay_html)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Failed to deliver AI relay message to Telegram chat %s: %s", tg_chat_id, type(exc).__name__)
+
+    try:
+        runtime.spawn(_safe_send())
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Could not schedule AI Telegram relay task for chat %s: %s", tg_chat_id, type(exc).__name__)
 
 
 def relay_web_message(trip_id: int, sender_name: str, text: str, tg_chat_id: Optional[int] = None) -> None:
@@ -140,7 +209,7 @@ async def handle_incoming_message(msg: IncomingMessage) -> Message:
         relay_web_message(msg.trip_id, sender_name, clean_text, tg_chat_id)
 
     # 3. AI triggers: extraction or mentions
-    if chat_ai.is_ai_mention(clean_text):
+    if chat_ai.is_ai_mention(clean_text, msg.meta):
         runtime.spawn(chat_ai.run_ai_mention(msg.trip_id, msg_id))
     elif chat_ai.should_auto_extract(clean_text):
         runtime.spawn(chat_ai.run_auto_extract(msg.trip_id, msg_id))

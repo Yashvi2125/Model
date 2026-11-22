@@ -88,8 +88,14 @@ def _finish_ok(itinerary_id: int, res) -> int:
         it.status, it.plan_markdown, it.research_markdown = "succeeded", res.plan, res.research
         it.days, it.transcript, it.search_used = parse_itinerary(res.plan), res.transcript, res.search_used
         it.model, it.completed_at = s.GEMINI_MODEL, utcnow()
-        db.get(Trip, it.trip_id).status = "itinerary_ready"
+        trip_obj = db.get(Trip, it.trip_id)
+        trip_obj.status = "itinerary_ready"
         db.commit()
+        try:
+            from server.services.research import invalidate_cache
+            invalidate_cache(trip_obj.destination if trip_obj else None)
+        except Exception:
+            pass
         note = f"Itinerary v{it.version} is ready." + ("" if res.search_used else " Live web research wasn't available, so it's based on the AI's general knowledge.")
         msgs.post(db, it.trip_id, "system", note, None, {"itinerary_id": it.id})
         return it.version

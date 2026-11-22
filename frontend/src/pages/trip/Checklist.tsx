@@ -42,7 +42,7 @@ export default function Checklist() {
               <label className="sr-only" htmlFor={`as-${i.id}`}>Assign “{i.text}”</label>
               <select id={`as-${i.id}`} className="input !w-auto !py-1.5 text-sm" value={i.assignee_id ?? ""} onChange={(e) => assign.mutate({ id: i.id, uid: e.target.value ? Number(e.target.value) : null })}>
                 <option value="">Unassigned</option>{trip.members.map((m) => <option key={m.user_id} value={m.user_id}>{m.name}</option>)}</select>
-              <button className="rounded-lg p-1.5 text-ink-400 hover:bg-coral-100 hover:text-coral-700" aria-label={`Delete “${i.text}”`} onClick={() => remove.mutate(i.id)}><Trash2 className="h-4 w-4" /></button>
+              <button className="rounded-lg p-2 min-h-[44px] min-w-[44px] flex items-center justify-center text-ink-400 hover:bg-coral-100 hover:text-coral-700" aria-label={`Delete “${i.text}”`} onClick={() => remove.mutate(i.id)}><Trash2 className="h-4 w-4" /></button>
             </li>))}
           {total === 0 && <li className="py-6 text-center text-ink-500">Nothing on the list yet.</li>}
         </ul>

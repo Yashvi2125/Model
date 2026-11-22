@@ -27,7 +27,15 @@ async def research(a: TripAccess = Depends(trip_access), db: Session = Depends(g
         "tavily_configured": ai_status()["tavily_configured"],
     }
     if not dest:
-        return {**notes, "destination": None, "location": None, "weather": None, "errors": [],
+        return {**notes, "destination": None, "location": None, "locations": [], "weather": None, "errors": [],
                 "unavailable_reason": "No destination has been chosen yet. Add one to the trip or to a member's preferences."}
-    data = await research_service.overview(dest, t.start_date, t.end_date)
+    itinerary_days = (it.days or {}).get("days", []) if it else []
+    data = await research_service.overview(
+        dest,
+        t.start_date,
+        t.end_date,
+        itinerary_days=itinerary_days,
+        itinerary_version=it.version if it else 0,
+        trip_id=t.id,
+    )
     return {**notes, **data}

@@ -10,7 +10,7 @@ import { emailValid, passwordChecks, passwordValid } from "../lib/validation";
 function Frame({ title, subtitle, children, footer }: { title: string; subtitle: string; children: ReactNode; footer: ReactNode }) {
   return (
     <div className="grid min-h-screen lg:grid-cols-[1fr_1.05fr]">
-      <div className="flex flex-col px-6 py-8 sm:px-12">
+      <div className="flex flex-col px-4 py-8 sm:px-12">
         <Logo />
         <div className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center py-10">
           <h1 className="text-3xl font-bold">{title}</h1>
@@ -46,7 +46,7 @@ function PasswordInput({ label, value, onChange, error, autoComplete, hint }:
       <Input label={label} type={show ? "text" : "password"} value={value} onChange={(e) => onChange(e.target.value)}
         error={error} hint={hint} autoComplete={autoComplete} className="pr-11" />
       <button type="button" onClick={() => setShow((s) => !s)} aria-label={show ? "Hide password" : "Show password"} aria-pressed={show}
-        className="absolute right-2 top-[34px] rounded-lg p-1.5 text-ink-500 hover:bg-sand-100">
+        className="absolute right-1 top-[28px] rounded-lg p-2 text-ink-500 hover:bg-sand-100 min-h-[44px] min-w-[44px] flex items-center justify-center">
         {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
       </button>
     </div>

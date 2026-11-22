@@ -64,6 +64,32 @@ def test_only_owner_can_delete_and_remove(user_a, user_b):
     assert user_b.get(f"/api/trips/{t['id']}").status_code == 404
 
 
+def test_owner_delete_trip_cleans_up_all_child_entities(user_a, user_b):
+    t = make_trip(user_a)
+    tid = t["id"]
+    # user_b joins
+    assert user_b.post("/api/trips/join", json={"code": t["code"]}).status_code == 200
+    # add a chat message
+    assert user_a.post(f"/api/trips/{tid}/messages", json={"content": "Pack bags!"}).status_code == 201
+    # add a checklist item
+    assert user_a.post(f"/api/trips/{tid}/checklist", json={"text": "Carry passport"}).status_code == 201
+
+    # non-owner member cannot delete (403)
+    assert user_b.delete(f"/api/trips/{tid}").status_code == 403
+
+    # owner deletes trip (204)
+    del_res = user_a.delete(f"/api/trips/{tid}")
+    assert del_res.status_code == 204
+
+    # trip is removed from owner's trip list
+    trips = user_a.get("/api/trips").json()
+    assert tid not in [x["id"] for x in trips]
+
+    # accessing deleted trip returns 404
+    assert user_a.get(f"/api/trips/{tid}").status_code == 404
+    assert user_b.get(f"/api/trips/{tid}").status_code == 404
+
+
 def test_data_persists_across_app_restart(user_a):
     t = make_trip(user_a)
     from fastapi.testclient import TestClient

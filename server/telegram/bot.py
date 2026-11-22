@@ -943,19 +943,6 @@ async def handle_group_message(update: Update, context: ContextTypes.DEFAULT_TYP
         if trip:
             ensure_trip_member(db, trip.id, user.id, tg_user.id, tg_user.username)
 
-    # 1. Forward to Unified Ingestion Bus if connected to a trip
-    if trip:
-        in_msg = IncomingMessage(
-            trip_id=trip.id,
-            user_id=user.id,
-            channel="telegram",
-            text=text,
-            external_message_id=str(update.message.message_id),
-            sender_name=user.name,
-        )
-        runtime.spawn(handle_incoming_message(in_msg))
-
-    # 2. Check if we should reply actively:
     bot_username = (context.bot.username or "").lower()
     is_reply_to_bot = (
         update.message.reply_to_message is not None
@@ -966,16 +953,33 @@ async def handle_group_message(update: Update, context: ContextTypes.DEFAULT_TYP
     is_mention = (
         is_private
         or is_reply_to_bot
-        or f"@{bot_username}" in text.lower()
+        or (bool(bot_username) and f"@{bot_username}" in text.lower())
         or "@ai" in text.lower()
         or "@tripmate" in text.lower()
         or "@bot" in text.lower()
     )
 
+    # 1. Forward to Unified Ingestion Bus if connected to a trip
+    if trip:
+        in_msg = IncomingMessage(
+            trip_id=trip.id,
+            user_id=user.id,
+            channel="telegram",
+            text=text,
+            external_message_id=str(update.message.message_id),
+            sender_name=user.name,
+            meta={"ai_mention": is_mention},
+        )
+        runtime.spawn(handle_incoming_message(in_msg))
+        # Active replies for trip chats are handled authoritatively by the unified
+        # message bus (chat_ai.run_ai_mention), which relays the AI response to the group.
+        # This prevents duplicate responses from both the bus and the ADK advisor.
+        return
+
     if not is_mention:
         return  # Passive mode: do not spam the group
 
-    # Active reply via Google ADK Travel Advisor Agent
+    # Active reply via Google ADK Travel Advisor Agent (for 1-on-1 private DMs outside a trip)
     clean_text = re.sub(rf"@({re.escape(bot_username)}|ai|tripmate|bot)\b", "", text, flags=re.IGNORECASE).strip() or text
     await send_typing_action(chat_id, context)
 

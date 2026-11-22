@@ -64,8 +64,56 @@ export interface BudgetData {
   generating: boolean; members_joined: number;
 }
 export interface ChecklistItem { id: number; text: string; done: boolean; assignee_id: number | null; position: number; completed_at: string | null }
+export interface LocationWeatherDay {
+  date: string;
+  max_c: number | null;
+  min_c: number | null;
+  condition: string;
+  rain_chance: number | null;
+}
+
+export interface LocationWeather {
+  temp_c: number | null;
+  temp_display: string;
+  date_label?: string | null;
+  avg_high_c?: number | null;
+  avg_low_c?: number | null;
+  condition: string;
+  humidity: number | null;
+  wind_speed_kmh: number | null;
+  rain_chance: number | null;
+  forecast_available: boolean;
+  forecast_note: string | null;
+  days?: LocationWeatherDay[];
+}
+
+export interface UnlocatedStop {
+  name: string;
+  reason: string;
+}
+
+export interface ResearchLocation {
+  name: string;
+  label: string;
+  lat: number;
+  lon: number;
+  country?: string;
+  admin?: string;
+  distance_km?: number | null;
+  is_destination?: boolean;
+  is_region?: boolean;
+  is_approximate?: boolean;
+  weather?: LocationWeather | null;
+}
+
 export interface Research {
-  destination: string | null; location: { name: string; country?: string; admin?: string; lat: number; lon: number } | null;
+  destination: string | null;
+  location: ResearchLocation | null;
+  locations?: ResearchLocation[];
+  unlocated_stops?: (string | UnlocatedStop)[];
+  is_resolving?: boolean;
+  pending_count?: number;
+  status_message?: string | null;
   weather: { days: { date: string; summary: string; max_c: number; min_c: number; rain_chance: number | null }[]; covers_trip: boolean; note: string | null } | null;
   errors: string[]; attribution?: string; unavailable_reason?: string; research_markdown: string | null; sources: string[];
   search_used: boolean | null; itinerary_version: number | null; tavily_configured: boolean;

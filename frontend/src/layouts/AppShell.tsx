@@ -66,13 +66,13 @@ export default function AppShell() {
 
       <header className="no-print sticky top-0 z-30 flex items-center justify-between border-b border-sand-200 bg-white/90 px-4 py-3 backdrop-blur lg:hidden">
         <Logo to="/app" />
-        <button className="btn-ghost !p-2" aria-label="Open menu" aria-expanded={open} onClick={() => setOpen(true)}><Menu className="h-6 w-6" /></button>
+        <button className="btn-ghost !p-2 min-h-[44px] min-w-[44px] flex items-center justify-center" aria-label="Open menu" aria-expanded={open} onClick={() => setOpen(true)}><Menu className="h-6 w-6" /></button>
       </header>
       {open && (
         <div className="no-print fixed inset-0 z-40 lg:hidden" role="dialog" aria-modal="true" aria-label="Menu">
           <div className="absolute inset-0 bg-ink-950/40" onClick={() => setOpen(false)} />
           <div className="absolute inset-y-0 left-0 w-72 max-w-[85%] bg-white shadow-xl">
-            <button className="btn-ghost absolute right-2 top-3 !p-2" aria-label="Close menu" onClick={() => setOpen(false)}><X className="h-5 w-5" /></button>
+            <button className="btn-ghost absolute right-2 top-3 !p-2 min-h-[44px] min-w-[44px] flex items-center justify-center" aria-label="Close menu" onClick={() => setOpen(false)}><X className="h-5 w-5" /></button>
             {nav}
           </div>
         </div>

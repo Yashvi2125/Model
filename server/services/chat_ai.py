@@ -18,7 +18,7 @@ from server.services.realtime import publish
 
 log = logging.getLogger("tripmate.chat_ai")
 
-MENTION_RE = re.compile(r"(?<![\w@])@(ai|tripmate|bot)\b", re.IGNORECASE)
+MENTION_RE = re.compile(r"(?<![\w@])@(ai|tripmate[\w]*|bot|[\w]+_bot)\b", re.IGNORECASE)
 SIGNAL_RE = re.compile(
     r"(budget|₹|\brs\.?\s?\d|\binr\b|\$\s?\d|\b\d[\d,]*\s?(k|rupees|per person|pp)\b|\bprefer|\bi (want|love|like|hate|need)\b|"
     r"\bavoid|can'?t eat|vegetarian|vegan|jain|halal|allerg|\b\d+[- ]?(day|night)s?\b|trip to|visit|going to|"
@@ -26,8 +26,10 @@ SIGNAL_RE = re.compile(
     re.IGNORECASE)
 
 
-def is_ai_mention(text: str) -> bool:
-    return bool(MENTION_RE.search(text))
+def is_ai_mention(text: str, meta: Optional[dict] = None) -> bool:
+    if meta and meta.get("ai_mention"):
+        return True
+    return bool(MENTION_RE.search(text or ""))
 
 
 def looks_like_preference(text: str) -> bool:
@@ -116,4 +118,12 @@ async def run_auto_extract(trip_id: int, message_id: int) -> None:
 
 def _post(trip_id: int, kind: str, content: str, meta: dict):
     with SessionLocal() as db:
-        return msgs.post(db, trip_id, kind, content, None, meta)
+        m = msgs.post(db, trip_id, kind, content, None, meta)
+        trip = db.get(Trip, trip_id)
+        tg_chat_id = trip.telegram_group_chat_id if trip else None
+
+    if tg_chat_id and kind == "ai":
+        from server.services import message_bus
+        message_bus.relay_ai_reply(trip_id, content, tg_chat_id)
+
+    return m

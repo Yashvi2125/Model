@@ -1,3 +1,4 @@
+import logging
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -11,6 +12,9 @@ from server.security import current_user, rate_limit
 from server.services import messages as msgs
 from server.services import preferences as prefs
 from server.services.access import NOT_FOUND, TripAccess, trip_access
+from server.services.realtime import publish
+
+log = logging.getLogger("tripmate.trips")
 
 router = APIRouter(prefix="/api/trips", tags=["trips"])
 
@@ -132,8 +136,12 @@ def update_trip(body: TripUpdate, a: TripAccess = Depends(trip_access), db: Sess
 @router.delete("/{trip_id}", status_code=204)
 def delete_trip(a: TripAccess = Depends(trip_access), db: Session = Depends(get_db)):
     a.require_owner()
+    trip_id = a.trip.id
+    if a.trip.telegram_group_chat_id:
+        log.info("Deleting trip %s, clearing Telegram group chat binding %s", trip_id, a.trip.telegram_group_chat_id)
     db.delete(a.trip)
     db.commit()
+    publish(trip_id, {"type": "trip_deleted", "trip_id": trip_id})
 
 
 @router.patch("/{trip_id}/joining", response_model=TripDetail)

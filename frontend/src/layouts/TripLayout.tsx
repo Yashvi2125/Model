@@ -56,7 +56,7 @@ export default function TripLayout() {
         <nav aria-label="Trip sections" className="-mx-4 mt-5 overflow-x-auto border-b border-sand-200 px-4 sm:mx-0 sm:px-0">
           <ul className="flex min-w-max gap-1">
             {TABS.map(([to, label]) => (
-              <li key={to}><NavLink to={to} className={({ isActive }) => `block whitespace-nowrap border-b-2 px-3.5 py-2.5 text-[15px] font-medium ${isActive ? "border-lagoon-600 text-lagoon-800" : "border-transparent text-ink-500 hover:text-ink-900"}`}>{label}</NavLink></li>))}
+              <li key={to}><NavLink to={to} className={({ isActive }) => `inline-flex items-center min-h-[44px] whitespace-nowrap border-b-2 px-3.5 py-2 text-[14px] sm:text-[15px] font-medium transition-colors ${isActive ? "border-lagoon-600 text-lagoon-800" : "border-transparent text-ink-500 hover:text-ink-900"}`}>{label}</NavLink></li>))}
           </ul>
         </nav>
       </header>

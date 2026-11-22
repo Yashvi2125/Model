@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, Link2, RefreshCw, Share2, Trash2 } from "lucide-react";
+import { Check, Copy, Link2, RefreshCw, Share2 } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Avatar, Badge, Button } from "../../components/ui";
@@ -25,7 +25,6 @@ export default function Members() {
   const joining = useMutation({ mutationFn: (v: boolean) => patch<TripDetail>(`/api/trips/${trip.id}/joining`, { is_joinable: v }), onSuccess: set, onError: err });
   const remove = useMutation({ mutationFn: (uid: number) => del(`/api/trips/${trip.id}/members/${uid}`), onSuccess: () => { qc.invalidateQueries({ queryKey: ["trip", trip.id] }); qc.invalidateQueries({ queryKey: ["prefs", trip.id] }); }, onError: err });
   const leave = useMutation({ mutationFn: () => post(`/api/trips/${trip.id}/leave`), onSuccess: () => { qc.invalidateQueries({ queryKey: ["trips"] }); navigate("/app/trips"); }, onError: err });
-  const destroy = useMutation({ mutationFn: () => del(`/api/trips/${trip.id}`), onSuccess: () => { qc.invalidateQueries({ queryKey: ["trips"] }); toast.success("Trip deleted."); navigate("/app/trips"); }, onError: err });
 
   const share = async () => { try { await navigator.share({ title: trip.name, text: `Join our trip “${trip.name}” on TripMate AI. Code: ${trip.code}`, url: link }); } catch { /* cancelled */ } };
 
@@ -52,10 +51,13 @@ export default function Members() {
             {m.role === "owner" ? <Badge tone="teal">Organiser</Badge> : owner && <Button variant="ghost" className="!py-1.5 text-coral-700" aria-label={`Remove ${m.name}`} loading={remove.isPending && remove.variables === m.user_id}
               onClick={() => { if (confirm(`Remove ${m.name} from this trip?`)) remove.mutate(m.user_id); }}>Remove</Button>}</li>))}</ul></section>
 
-      <section className="card p-6"><h2 className="text-xl font-semibold">{owner ? "Delete trip" : "Leave trip"}</h2>
-        <p className="mt-1 text-sm text-ink-500">{owner ? "Permanently deletes the trip, its chat, itineraries and checklist for everyone." : "You’ll lose access to the chat and plan. You can rejoin with the code if the organiser allows."}</p>
-        {owner ? <Button variant="danger" className="mt-4" loading={destroy.isPending} onClick={() => { if (confirm(`Delete “${trip.name}” for everyone? This can’t be undone.`)) destroy.mutate(); }}><Trash2 className="h-4 w-4" />Delete this trip</Button>
-          : <Button variant="secondary" className="mt-4" loading={leave.isPending} onClick={() => { if (confirm("Leave this trip?")) leave.mutate(); }}>Leave trip</Button>}</section>
+      {!owner && (
+        <section className="card p-6">
+          <h2 className="text-xl font-semibold">Leave trip</h2>
+          <p className="mt-1 text-sm text-ink-500">You’ll lose access to the chat and plan. You can rejoin with the code if the organiser allows.</p>
+          <Button variant="secondary" className="mt-4" loading={leave.isPending} onClick={() => { if (confirm("Leave this trip?")) leave.mutate(); }}>Leave trip</Button>
+        </section>
+      )}
     </div>
   );
 }

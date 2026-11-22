@@ -928,5 +928,144 @@ def test_web_chat_relay_task_failure_does_not_affect_web_response(user_a):
         assert saved is not None
 
 
+def test_markdown_to_telegram_html_conversion():
+    from server.services.message_bus import markdown_to_telegram_html
+
+    # Bold and Italic
+    res = markdown_to_telegram_html("Here is **bold** and *italic* and `code`.")
+    assert "<b>bold</b>" in res
+    assert "<i>italic</i>" in res
+    assert "<code>code</code>" in res
+
+    # Escaped raw HTML
+    res2 = markdown_to_telegram_html("Fish & chips < 500 yen > 100 yen.")
+    assert "&amp;" in res2
+    assert "&lt; 500" in res2
+    assert "&gt; 100" in res2
+
+    # Headings and bullets
+    res3 = markdown_to_telegram_html("## Day 1: Tokyo\n- Visit Senso-ji\n* Eat Ramen")
+    assert "<b>Day 1: Tokyo</b>" in res3
+    assert "• Visit Senso-ji" in res3
+    assert "• Eat Ramen" in res3
+
+    # Links
+    res4 = markdown_to_telegram_html("[Google](https://google.com)")
+    assert '<a href="https://google.com">Google</a>' in res4
+
+    # Code blocks
+    res5 = markdown_to_telegram_html("```python\nprint('hello')\n```")
+    assert "<pre><code>" in res5
+
+
+@pytest.mark.asyncio
+async def test_ai_reply_relayed_with_ai_label_and_no_via_web():
+    from server import runtime
+    runtime.set_loop(asyncio.get_running_loop())
+    from server.services.chat_ai import _post
+    from server.services.message_bus import set_telegram_sender, _relay_history
+
+    relayed = []
+
+    async def mock_sender(chat_id, text):
+        relayed.append((chat_id, text))
+
+    set_telegram_sender(mock_sender)
+
+    with SessionLocal() as db:
+        u = get_or_create_telegram_user(db, tg_user_id=987654, full_name="Test AI User")
+        t = Trip(
+            name="AI Sync Test",
+            code="AISYNC01",
+            trip_code="AISYNC01",
+            destination="Kyoto",
+            start_date=date.today(),
+            end_date=date.today() + timedelta(days=3),
+            owner_id=u.id,
+            telegram_group_chat_id=-10022334455,
+        )
+        db.add(t)
+        db.commit()
+        trip_id = t.id
+
+    _relay_history[trip_id] = []
+
+    # Post an AI reply via chat_ai._post
+    ai_text = "Here is your plan for **Day 1**: Visit Kinkaku-ji with budget < ¥2000 & cash only!"
+    _post(trip_id, "ai", ai_text, {})
+    await asyncio.sleep(0.05)
+
+    assert len(relayed) == 1
+    chat_id, body = relayed[0]
+    assert chat_id == -10022334455
+    # Must use TripMate AI label, NOT '(via web)'
+    assert "🤖 <b>TripMate AI:</b>" in body
+    assert "(via web)" not in body
+    # Markdown converted and raw HTML escaped
+    assert "<b>Day 1</b>" in body
+    assert "&lt; ¥2000" in body
+    assert "&amp;" in body
+
+
+@pytest.mark.asyncio
+async def test_ai_reply_chunked_under_4096_chars():
+    from server.telegram.bot import chunk_message
+
+    # Generate a long message exceeding 4096 chars
+    long_plan = "\n\n".join([f"**Section {i}**: Plan details with comprehensive sightseeing and hotel recommendations." for i in range(70)])
+    assert len(long_plan) > 5000
+
+    chunks = chunk_message(long_plan, max_size=4000)
+    assert len(chunks) > 1
+    for chunk in chunks:
+        assert len(chunk) <= 4000
+
+
+@pytest.mark.asyncio
+async def test_telegram_user_own_message_never_echoed():
+    from server import runtime
+    runtime.set_loop(asyncio.get_running_loop())
+    from server.services.message_bus import set_telegram_sender, _relay_history
+
+    relayed = []
+
+    async def mock_sender(chat_id, text):
+        relayed.append((chat_id, text))
+
+    set_telegram_sender(mock_sender)
+
+    with SessionLocal() as db:
+        u = get_or_create_telegram_user(db, tg_user_id=876543, full_name="Telegram Sender")
+        t = Trip(
+            name="No Echo Test",
+            code="NOECHO01",
+            trip_code="NOECHO01",
+            destination="Osaka",
+            start_date=date.today(),
+            end_date=date.today() + timedelta(days=2),
+            owner_id=u.id,
+            telegram_group_chat_id=-10033445566,
+        )
+        db.add(t)
+        db.commit()
+        trip_id = t.id
+
+    _relay_history[trip_id] = []
+
+    # Telegram user sends a regular message
+    msg = IncomingMessage(
+        trip_id=trip_id,
+        user_id=u.id,
+        channel="telegram",
+        text="Hello group, I love ramen!",
+        sender_name="TelegramUser",
+    )
+    await handle_incoming_message(msg)
+    await asyncio.sleep(0.05)
+
+    # Telegram sender must NOT have received an echo
+    assert len(relayed) == 0
+
+
 
 
