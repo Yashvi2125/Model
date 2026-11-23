@@ -16,7 +16,7 @@ try:
         _message_transform.thought_assistant_transformer_funcs_gemini
     )
     register_transformer("openai", "gemini", _message_transform.__GEMINI_TRANSFORMER_MAP)
-    for m in ["gemini-3.5-flash", "gemini-3.7-flash", "gemini-3.8-flash", "gemini-2.5-flash-lite"]:
+    for m in ["gemini-3.5-flash", "gemini-3.7-flash", "gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash-lite"]:
         register_transformer("openai", m, _message_transform.__GEMINI_TRANSFORMER_MAP)
 except Exception:
     pass

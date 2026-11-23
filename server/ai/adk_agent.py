@@ -188,10 +188,7 @@ def get_adk_runner() -> adk.Runner:
     if _adk_runner is not None:
         return _adk_runner
 
-    model_name = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
-    # If gemini-2.5-flash is configured, fallback to 3.1-flash-lite since 2.5 is retired
-    if "2.5-flash" in model_name:
-        model_name = "gemini-3.1-flash-lite"
+    model_name = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 
     _session_service = InMemorySessionService()
     _adk_agent = adk.Agent(

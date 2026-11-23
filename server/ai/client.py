@@ -97,20 +97,22 @@ async def llm_text(system: str, user: str, timeout: int | None = None) -> str:
     Single-turn text generation using the google-genai SDK.
     system + user are combined into a single prompt since the native SDK
     treats the first turn as user content; we prepend the system instruction.
+    Supports automatic fallback to GEMINI_FALLBACK_MODEL on 429, 503, 404, or overload errors.
     """
     effective_timeout = timeout or get_settings().ai_timeout_seconds
-    model = ai_settings.GEMINI_MODEL or "gemini-3.8-flash"
+    primary_model = ai_settings.GEMINI_MODEL or "gemini-3.8-flash"
+    fallback_model = getattr(ai_settings, "GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 
     client = _get_genai_client()
     prompt = f"{system}\n\n{user}"
 
-    try:
-        import google.genai.types as genai_types
+    import google.genai.types as genai_types
 
-        response = await asyncio.wait_for(
+    async def _call_model(model_name: str):
+        return await asyncio.wait_for(
             asyncio.to_thread(
                 client.models.generate_content,
-                model=model,
+                model=model_name,
                 contents=prompt,
                 config=genai_types.GenerateContentConfig(
                     system_instruction=system,
@@ -119,10 +121,25 @@ async def llm_text(system: str, user: str, timeout: int | None = None) -> str:
             ),
             timeout=effective_timeout,
         )
+
+    response = None
+    try:
+        response = await _call_model(primary_model)
     except asyncio.TimeoutError as exc:
         raise AIError("The AI took too long to respond. Please try again.") from exc
     except Exception as exc:  # noqa: BLE001
-        raise friendly_error(exc) from exc
+        err_str = str(exc).lower()
+        is_recoverable = any(k in err_str for k in ("429", "503", "404", "overloaded", "unavailable", "rate", "resource_exhausted", "not_found"))
+        if is_recoverable and fallback_model and fallback_model != primary_model:
+            log.warning("Primary model %s failed (%s); falling back to %s", primary_model, exc, fallback_model)
+            try:
+                response = await _call_model(fallback_model)
+            except asyncio.TimeoutError as f_exc:
+                raise AIError("The AI took too long to respond. Please try again.") from f_exc
+            except Exception as f_exc:  # noqa: BLE001
+                raise friendly_error(f_exc) from f_exc
+        else:
+            raise friendly_error(exc) from exc
 
     # Extract text
     try:

@@ -58,18 +58,54 @@ async def generate_plan(prompt: str, search_query: str) -> PlanResult:
     get_client()  # raises AINotConfigured with a clear message if the key is missing
     from agents.planner import create_planner_agent
     from agents.researcher import create_researcher_agent
+    from models.gemini_model import create_gemini_model_client
     from teams.travel_team import create_travel_team
 
     search_context, used = await _live_research(search_query)
     full_task = (f"{prompt}{search_context}\n"
                  "Instructions: Use the real-time research above (if present) to create a detailed, day-by-day itinerary "
                  "with estimated costs and recommendations. Label costs as estimates unless a source gives a fixed price.")
-    team = create_travel_team(planner=create_planner_agent(), researcher=create_researcher_agent())
+
+    def _build_team(model_name: str | None = None):
+        import agents.planner as _pl
+        import models.gemini_model as _gm
+        custom_client = getattr(_pl, "model_client", None)
+        if custom_client is not None and custom_client is not getattr(_gm, "model_client", None):
+            client = custom_client
+        elif model_name:
+            client = create_gemini_model_client(model=model_name)
+        else:
+            client = None
+        return create_travel_team(
+            planner=create_planner_agent(client=client),
+            researcher=create_researcher_agent(client=client),
+        )
+
+    primary_model = ai_settings.GEMINI_MODEL or "gemini-3.8-flash"
+    fallback_model = getattr(ai_settings, "GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
+    timeout = get_settings().itinerary_timeout_seconds
+
+    team = _build_team(primary_model)
     try:
         result = await asyncio.wait_for(
-            team.run(task=TextMessage(content=full_task, source="User")), get_settings().itinerary_timeout_seconds)
+            team.run(task=TextMessage(content=full_task, source="User")), timeout)
+    except asyncio.TimeoutError as exc:
+        raise AIError("The AI took too long to respond. Please try again.") from exc
     except Exception as exc:  # noqa: BLE001
-        raise friendly_error(exc) from exc
+        err_str = str(exc).lower()
+        is_recoverable = any(k in err_str for k in ("429", "503", "404", "overloaded", "unavailable", "rate", "resource_exhausted", "not_found"))
+        if is_recoverable and fallback_model and fallback_model != primary_model:
+            log.warning("Primary model %s failed during itinerary team planning (%s); falling back to %s", primary_model, exc, fallback_model)
+            try:
+                fallback_team = _build_team(fallback_model)
+                result = await asyncio.wait_for(
+                    fallback_team.run(task=TextMessage(content=full_task, source="User")), timeout)
+            except asyncio.TimeoutError as f_exc:
+                raise AIError("The AI took too long to respond. Please try again.") from f_exc
+            except Exception as f_exc:  # noqa: BLE001
+                raise friendly_error(f_exc) from f_exc
+        else:
+            raise friendly_error(exc) from exc
 
     word = ai_settings.TERMINATION_WORD
     transcript, plan, research = [], "", ""

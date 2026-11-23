@@ -17,7 +17,8 @@ Get-Content "$root\.env" | ForEach-Object {
 
 # SQLite for local dev (no Postgres / Docker required)
 [System.Environment]::SetEnvironmentVariable("DATABASE_URL", "sqlite:///./tripmate_dev.db", "Process")
-[System.Environment]::SetEnvironmentVariable("GEMINI_MODEL", "gemini-3.1-flash-lite", "Process")
+[System.Environment]::SetEnvironmentVariable("GEMINI_MODEL", "gemini-3.8-flash", "Process")
+[System.Environment]::SetEnvironmentVariable("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite", "Process")
 
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor Cyan
@@ -26,7 +27,7 @@ Write-Host "============================================================" -Foreg
 Write-Host "  Backend  : http://localhost:8000" -ForegroundColor Green
 Write-Host "  API Docs : http://localhost:8000/api/docs" -ForegroundColor Green
 Write-Host "  Frontend : http://localhost:5173  (run start_frontend.ps1)" -ForegroundColor Green
-Write-Host "  Model    : gemini-3.1-flash-lite" -ForegroundColor Yellow
+Write-Host "  Model    : gemini-3.8-flash (fallback: gemini-3.5-flash-lite)" -ForegroundColor Yellow
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host ""
 
