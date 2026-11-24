@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import L from "leaflet";
 import { Calendar, CloudSun, ExternalLink, MapPin, MapPinOff } from "lucide-react";
 import { useEffect, useRef } from "react";
+import { Link } from "react-router-dom";
 import { Markdown } from "../../components/Markdown";
 import { Alert, EmptyState, PageLoader, QueryError } from "../../components/ui";
 import { useTrip } from "../../layouts/tripContext";
@@ -148,6 +149,23 @@ export default function ResearchPage() {
             </div>
           )}
         </section>
+      )}
+
+      {!r.itinerary_version && (
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-4 rounded-xl bg-sand-100 border border-sand-200">
+          <div className="flex items-center gap-3">
+            <MapPin className="h-5 w-5 text-lagoon-600 shrink-0" />
+            <p className="text-sm text-ink-700">
+              Showing destination only. Generate an itinerary to see all daily activity stops and restaurants pinned on this map.
+            </p>
+          </div>
+          <Link
+            to={`/app/trips/${trip.id}/itinerary`}
+            className="btn-secondary text-xs font-semibold shrink-0"
+          >
+            Go to Itinerary
+          </Link>
+        </div>
       )}
 
       {/* Weather card per location */}

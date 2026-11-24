@@ -37,5 +37,6 @@ async def research(a: TripAccess = Depends(trip_access), db: Session = Depends(g
         itinerary_days=itinerary_days,
         itinerary_version=it.version if it else 0,
         trip_id=t.id,
+        raw_plan=it.plan_markdown if it else None,
     )
     return {**notes, **data}

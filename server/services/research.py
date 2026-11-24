@@ -30,6 +30,7 @@ TTL = 1800
 MISS_TTL = 86400  # 24 hours
 
 _nominatim_last_call = 0.0
+_nominatim_blocked_until = 0.0
 _USER_AGENT = "TripMate-Travel-Planner/1.0 (https://tripmate.app; info@tripmate.app)"
 
 WMO = {
@@ -163,14 +164,17 @@ def _names_resemble(query: str, candidate_name: str) -> bool:
     return False
 
 
-async def _throttle_nominatim() -> None:
-    """Enforce max ~1 request per second for Nominatim policy."""
-    global _nominatim_last_call
+async def _throttle_nominatim() -> bool:
+    """Enforce max ~1 request per second for Nominatim policy. Returns False if currently blocked."""
+    global _nominatim_last_call, _nominatim_blocked_until
     now = time.time()
+    if now < _nominatim_blocked_until:
+        return False
     elapsed = now - _nominatim_last_call
     if elapsed < 1.05:
         await asyncio.sleep(1.05 - elapsed)
     _nominatim_last_call = time.time()
+    return True
 
 
 def invalidate_cache(destination: Optional[str] = None) -> None:
@@ -190,7 +194,7 @@ def invalidate_cache(destination: Optional[str] = None) -> None:
         _llm_validation_cache.clear()
 
 
-def extract_locations_from_itinerary(days_data: list[dict], max_candidates: int = 25, destination: Optional[str] = None) -> list[str]:
+def extract_locations_from_itinerary(days_data: list[dict], max_candidates: int = 25, destination: Optional[str] = None, raw_plan: Optional[str] = None) -> list[str]:
     """Extract candidate location names from itinerary days using structured places first, then robust fallback rules."""
     if isinstance(max_candidates, str):
         destination = max_candidates
@@ -220,22 +224,15 @@ def extract_locations_from_itinerary(days_data: list[dict], max_candidates: int 
         return structured_candidates[:max_candidates]
 
     # 2. Fallback Extractor (for itineraries without structured places):
-    # Rules:
-    # - NEVER extract from day headings or titles!
-    # - Extract from proper-noun phrases in bold text (allowing colons/punctuation inside or outside bold delimiters)
-    # - Clean meal prefixes ("Lunch at ...", "Dinner at ...")
-    # - Reject text beginning with determiners/demonstratives ("this ...", "that ...")
-    # - Reject clauses/sentences containing finite verbs
-    # - Reject text longer than 6 words
-    # - Reject standalone category words
     raw_candidates: list[str] = []
     bold_pattern = re.compile(r"\*\*([A-Za-z0-9\s'’\-–—.,/&:]+?)\*\*", re.DOTALL)
 
     for day in days_data or []:
         # Intentionally SKIP day.get("title") — day headings are thematic, never place names!
-        for s in day.get("sections", []) or []:
-            content = s.get("content", "")
-
+        contents = [s.get("content", "") for s in (day.get("sections", []) or [])]
+        if day.get("intro"):
+            contents.append(day.get("intro"))
+        for content in contents:
             for m in bold_pattern.finditer(content):
                 b_raw = m.group(1).strip().strip(" :.-–—*")
                 # Strip meal/activity prefixes
@@ -264,6 +261,31 @@ def extract_locations_from_itinerary(days_data: list[dict], max_candidates: int 
                     continue
 
                 raw_candidates.append(clean)
+
+    # 3. Fallback to raw_plan markdown if structured days yielded no places
+    if not raw_candidates and raw_plan:
+        for m in bold_pattern.finditer(raw_plan):
+            b_raw = m.group(1).strip().strip(" :.-–—*")
+            clean = re.sub(
+                r"^(?:Lunch|Dinner|Breakfast|Brunch|Snacks|Drinks|Meal|Spend your \w+ at|Visit|Explore|Tour)\s+(?:at\s+|the\s+)?",
+                "",
+                b_raw,
+                flags=re.I
+            ).strip(" :.-–—*")
+
+            low = clean.lower()
+            words = clean.split()
+
+            if len(clean) <= 2 or len(clean) > 45 or len(words) > 6:
+                continue
+            if DETERMINERS_START.search(clean) or CLAUSE_VERBS.search(clean):
+                continue
+            if low in STANDALONE_CATEGORIES or any(c in clean for c in ["₹", "$", "€", "£", "%"]):
+                continue
+            if low.startswith(("note", "estimate", "approx", "entry", "activity", "activities", "budget")):
+                continue
+
+            raw_candidates.append(clean)
 
     # Deduplicate while preserving order
     seen = set()
@@ -395,32 +417,36 @@ async def geocode_place(query: str) -> Optional[dict]:
 
     # 1. Primary: Nominatim
     try:
-        await _throttle_nominatim()
-        data = await _get(
-            "https://nominatim.openstreetmap.org/search",
-            {"q": q_clean, "format": "json", "limit": 5, "addressdetails": 1},
-        )
-        if isinstance(data, list) and len(data) > 0:
-            scored = sorted(data, key=lambda it: _score_nominatim_candidate(q_clean, it), reverse=True)
-            best = scored[0]
-            addr = best.get("address", {})
-            country = addr.get("country")
-            admin = addr.get("state") or addr.get("county") or addr.get("region")
-            name = best.get("name") or q_clean
-            place_type = best.get("type", "")
-            display = best.get("display_name") or f"{name}, {country}" if country else name
-            res = {
-                "name": name,
-                "label": f"{name} ({country})" if country and country.lower() not in name.lower() else name,
-                "display_name": display,
-                "country": country,
-                "admin": admin,
-                "type": place_type,
-                "lat": float(best["lat"]),
-                "lon": float(best["lon"]),
-            }
-            _geocode_cache[cache_key] = res
-            return res
+        if await _throttle_nominatim():
+            data = await _get(
+                "https://nominatim.openstreetmap.org/search",
+                {"q": q_clean, "format": "json", "limit": 5, "addressdetails": 1},
+            )
+            if isinstance(data, list) and len(data) > 0:
+                scored = sorted(data, key=lambda it: _score_nominatim_candidate(q_clean, it), reverse=True)
+                best = scored[0]
+                addr = best.get("address", {})
+                country = addr.get("country")
+                admin = addr.get("state") or addr.get("county") or addr.get("region")
+                name = best.get("name") or q_clean
+                place_type = best.get("type", "")
+                display = best.get("display_name") or f"{name}, {country}" if country else name
+                res = {
+                    "name": name,
+                    "label": f"{name} ({country})" if country and country.lower() not in name.lower() else name,
+                    "display_name": display,
+                    "country": country,
+                    "admin": admin,
+                    "type": place_type,
+                    "lat": float(best["lat"]),
+                    "lon": float(best["lon"]),
+                }
+                _geocode_cache[cache_key] = res
+                return res
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in (403, 429):
+            _nominatim_blocked_until = time.time() + 3600
+            log.warning("Nominatim returned %d for '%s'. Tripping circuit breaker for 1h.", exc.response.status_code, q_clean)
     except Exception as exc:  # noqa: BLE001
         log.warning("Nominatim geocoding failed for '%s': %s", q_clean, exc)
 
@@ -581,7 +607,8 @@ async def _geocode_candidate_within_radius(
     # Tier a: Nominatim bounded search with bare place name
     for v in variants[:2]:
         try:
-            await _throttle_nominatim()
+            if not await _throttle_nominatim():
+                break
             data = await _get(
                 "https://nominatim.openstreetmap.org/search",
                 {"q": v, "format": "json", "limit": 5, "addressdetails": 1, "viewbox": viewbox, "bounded": 1}
@@ -608,6 +635,11 @@ async def _geocode_candidate_within_radius(
                             return res, None
                     else:
                         outside_dist = dist
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (403, 429):
+                _nominatim_blocked_until = time.time() + 3600
+                log.info("Nominatim returned %d. Circuit breaker open for 1h.", exc.response.status_code)
+                break
         except httpx.TimeoutException:
             timed_out = True
         except Exception as exc:
@@ -617,7 +649,8 @@ async def _geocode_candidate_within_radius(
     for v in variants[:2]:
         q_city = f"{v}, {dest_city}"
         try:
-            await _throttle_nominatim()
+            if not await _throttle_nominatim():
+                break
             data = await _get(
                 "https://nominatim.openstreetmap.org/search",
                 {"q": q_city, "format": "json", "limit": 5, "addressdetails": 1, "viewbox": viewbox, "bounded": 1}
@@ -644,6 +677,11 @@ async def _geocode_candidate_within_radius(
                             return res, None
                     else:
                         outside_dist = dist
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (403, 429):
+                _nominatim_blocked_until = time.time() + 3600
+                log.info("Nominatim returned %d. Circuit breaker open for 1h.", exc.response.status_code)
+                break
         except httpx.TimeoutException:
             timed_out = True
         except Exception as exc:
@@ -653,7 +691,8 @@ async def _geocode_candidate_within_radius(
     for v in variants[2:]:
         for q in [v, f"{v}, {dest_city}"]:
             try:
-                await _throttle_nominatim()
+                if not await _throttle_nominatim():
+                    break
                 data = await _get(
                     "https://nominatim.openstreetmap.org/search",
                     {"q": q, "format": "json", "limit": 5, "addressdetails": 1, "viewbox": viewbox, "bounded": 1}
@@ -680,6 +719,11 @@ async def _geocode_candidate_within_radius(
                                 return res, None
                         else:
                             outside_dist = dist
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code in (403, 429):
+                    _nominatim_blocked_until = time.time() + 3600
+                    log.info("Nominatim returned %d. Circuit breaker open for 1h.", exc.response.status_code)
+                    break
             except httpx.TimeoutException:
                 timed_out = True
             except Exception as exc:
@@ -1152,6 +1196,7 @@ async def overview(
     itinerary_days: Optional[list[dict]] = None,
     itinerary_version: Optional[int] = None,
     trip_id: Optional[int] = None,
+    raw_plan: Optional[str] = None,
 ) -> dict[str, Any]:
     # Content hash ensures regenerated itineraries invalidate cached overview immediately
     itinerary_hash = hashlib.md5(json.dumps(itinerary_days or [], sort_keys=True).encode()).hexdigest()[:8]
@@ -1221,7 +1266,12 @@ async def overview(
             "note": dest_weather.get("forecast_note") if dest_weather else "Weather information currently unavailable.",
         }
 
-    candidates = extract_locations_from_itinerary(itinerary_days or [])
+    candidates = extract_locations_from_itinerary(
+        itinerary_days or [],
+        max_candidates=25,
+        destination=destination,
+        raw_plan=raw_plan,
+    )
     
     # Check if all candidate stops are already cached
     resolved_locations = [dest_loc]
