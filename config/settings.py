@@ -18,6 +18,12 @@ GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL") or (GEMINI_MODEL_CHAI
 # Weather service API keys
 WEATHERAPI_KEY = os.getenv("WEATHERAPI_KEY")
 
+# Local LLM settings (Ollama / Qwen)
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").lower()
+LOCAL_LLM_BASE_URL = os.getenv("LOCAL_LLM_BASE_URL", "http://host.docker.internal:11434")
+LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b-instruct")
+LOCAL_LLM_TIMEOUT = int(os.getenv("LOCAL_LLM_TIMEOUT", "60"))
+
 # Backwards compatibility alias
 MODEL = GEMINI_MODEL
 

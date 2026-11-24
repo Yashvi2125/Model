@@ -84,6 +84,10 @@ def fields_from_extracted(ex, travelers: int) -> dict[str, Any]:
             data[k] = v.strip()[:500]
     if ex.currency and ex.currency.upper() != "INR" and "budget_max" in data:
         data["notes"] = (data.get("notes", "") + f" (budget stated in {ex.currency.upper()})").strip()
+    if getattr(ex, "provider", None):
+        data["_provider"] = ex.provider
+    if getattr(ex, "model", None):
+        data["_model"] = ex.model
     return data
 
 

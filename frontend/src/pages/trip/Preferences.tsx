@@ -50,11 +50,21 @@ function SuggestionCard({ s, tripId, currency }: { s: Suggestion; tripId: number
   const done = (data: PreferencesOverview) => qc.setQueryData(["prefs", tripId], data);
   const accept = useMutation({ mutationFn: () => post<PreferencesOverview>(`/api/trips/${tripId}/preferences/suggestions/${s.id}/accept`), onSuccess: (d) => { done(d); toast.success("Added to your preferences."); }, onError: (e) => toast.error(errorMessage(e)) });
   const dismiss = useMutation({ mutationFn: () => post<PreferencesOverview>(`/api/trips/${tripId}/preferences/suggestions/${s.id}/dismiss`), onSuccess: done, onError: (e) => toast.error(errorMessage(e)) });
+  const provider = typeof (s.data as any)?._provider === "string" ? String((s.data as any)._provider) : null;
   return (
     <li className="rounded-xl border border-sun-500/40 bg-sun-100/50 p-4">
-      <p className="text-sm font-semibold text-sun-700"><Bot className="mr-1 inline h-4 w-4" />Noticed in your chat — please check</p>
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-semibold text-sun-700"><Bot className="mr-1 inline h-4 w-4" />Noticed in your chat — please check</p>
+        {provider ? (
+          <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium bg-sun-200 text-sun-800">
+            {provider === "qwen" ? "Qwen 2.5 (Local)" : "Gemini"}
+          </span>
+        ) : null}
+      </div>
       <ul className="mt-2 space-y-0.5 text-[15px]">
-        {Object.entries(s.data).map(([k, v]) => <li key={k}><span className="text-ink-500">{FIELD_LABELS[k] ?? k}: </span>
+        {Object.entries(s.data)
+          .filter(([k]) => !k.startsWith("_"))
+          .map(([k, v]) => <li key={k}><span className="text-ink-500">{FIELD_LABELS[k] ?? k}: </span>
           {Array.isArray(v) ? v.map((x) => interestLabel(String(x))).join(", ") : k === "budget_max" ? money(Number(v), currency) : String(v)}</li>)}
       </ul>
       <div className="mt-3 flex gap-2"><Button className="!py-1.5" loading={accept.isPending} onClick={() => accept.mutate()}>Add to my preferences</Button>

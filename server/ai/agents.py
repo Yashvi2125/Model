@@ -41,6 +41,8 @@ class ExtractedPreferences(BaseModel):
     restrictions: Optional[str] = None
     notes: Optional[str] = None
     confidence: float = Field(default=0.5, ge=0, le=1)
+    provider: Optional[str] = "gemini"
+    model: Optional[str] = None
 
     @field_validator("start_date", "end_date", "trip_days", "budget_per_person", "budget_total", "confidence", mode="before")
     @classmethod
@@ -64,18 +66,31 @@ accommodation (string|null), dietary (string|null), restrictions (string|null), 
 Amounts are plain numbers without separators (8,000 -> 8000)."""
 
 
-async def extract_preferences(text: str, traveller: str, trip_ctx: str) -> ExtractedPreferences:
+async def extract_preferences_gemini(text: str, traveller: str, trip_ctx: str) -> ExtractedPreferences:
+    import time
+    from server.ai.client import ai_status
+    t0 = time.time()
     data = await llm_json(
         PREF_SYSTEM,
         f"Today: {date.today().isoformat()}\n{trip_ctx}\nTraveller: {traveller}\nMessage: \"\"\"{text}\"\"\"",
         feature="preference_extraction",
         priority=PRIORITY_BACKGROUND,
     )
+    latency_ms = int((time.time() - t0) * 1000)
     try:
-        return ExtractedPreferences.model_validate(data)
+        ex = ExtractedPreferences.model_validate(data)
+        ex.provider = "gemini"
+        ex.model = ai_status()["model"]
+        log.info("provider=gemini model=%s latency_ms=%d", ex.model, latency_ms)
+        return ex
     except Exception as exc:  # noqa: BLE001
         log.warning("Preference extraction validation failed: %s", exc)
         raise AIError("The AI response couldn't be understood. Please try again.") from exc
+
+
+async def extract_preferences(text: str, traveller: str, trip_ctx: str) -> ExtractedPreferences:
+    from server.ai.local_llm import extract_preferences_with_fallback
+    return await extract_preferences_with_fallback(text, traveller, trip_ctx)
 
 
 # ---------------------------------------------------------------- assistant reply

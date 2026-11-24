@@ -37,7 +37,10 @@ def looks_like_preference(text: str) -> bool:
 
 
 def should_auto_extract(text: str) -> bool:
-    return get_settings().ai_auto_extract and ai_status()["gemini_configured"] and looks_like_preference(text)
+    settings = get_settings()
+    is_qwen = getattr(settings, "llm_provider", "gemini").lower() == "qwen"
+    is_gemini_ready = ai_status()["gemini_configured"]
+    return settings.ai_auto_extract and (is_qwen or is_gemini_ready) and looks_like_preference(text)
 
 
 def _clean_mention(text: str) -> str:
