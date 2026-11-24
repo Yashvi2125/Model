@@ -19,6 +19,7 @@ from pydantic import ValidationError
 from server.ai.agents import ExtractedPreferences, extract_preferences
 from server.ai.local_llm import (
     _local_semaphore,
+    classify_message_intent,
     extract_preferences_ollama,
     extract_preferences_with_fallback,
     normalize_extracted_json,
@@ -240,3 +241,173 @@ def test_suggestion_metadata_preserved_and_isolated():
     assert p.trip_days == 4
     assert not hasattr(p, "_provider")
     assert "_provider" not in p.sources
+
+
+@pytest.mark.asyncio
+async def test_classify_message_intent_success():
+    fake_resp = {
+        "message": {
+            "content": '{"intent": "casual_chat"}'
+        }
+    }
+    mock_resp = httpx.Response(
+        status_code=200,
+        json=fake_resp,
+        request=httpx.Request("POST", "http://localhost:11434/api/chat"),
+    )
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as m_post:
+        m_post.return_value = mock_resp
+        intent, latency_ms = await classify_message_intent("Haha nice joke bro")
+        assert intent == "casual_chat"
+        assert latency_ms >= 0
+
+
+@pytest.mark.asyncio
+async def test_classify_message_intent_preference_update():
+    fake_resp = {
+        "message": {
+            "content": '{"intent": "preference_update"}'
+        }
+    }
+    mock_resp = httpx.Response(
+        status_code=200,
+        json=fake_resp,
+        request=httpx.Request("POST", "http://localhost:11434/api/chat"),
+    )
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as m_post:
+        m_post.return_value = mock_resp
+        intent, latency_ms = await classify_message_intent("Goa for 4 days budget 20k")
+        assert intent == "preference_update"
+        assert latency_ms >= 0
+
+
+@pytest.mark.asyncio
+async def test_classify_message_intent_semaphore_busy_fail_open():
+    await _local_semaphore.acquire()
+    try:
+        assert _local_semaphore.locked()
+        intent, latency_ms = await classify_message_intent("Any message")
+        # Must fail open cleanly to "uncertain"
+        assert intent == "uncertain"
+        assert latency_ms == 0
+    finally:
+        _local_semaphore.release()
+
+
+@pytest.mark.asyncio
+async def test_classify_message_intent_offline_fail_open():
+    with patch("httpx.AsyncClient.post", side_effect=httpx.ConnectError("connection refused")):
+        intent, latency_ms = await classify_message_intent("Any message")
+        assert intent == "uncertain"
+        assert latency_ms >= 0
+
+
+@pytest.mark.asyncio
+async def test_classify_message_intent_timeout_fail_open():
+    with patch("httpx.AsyncClient.post", side_effect=httpx.ReadTimeout("timed out")):
+        intent, latency_ms = await classify_message_intent("Any message")
+        assert intent == "uncertain"
+        assert latency_ms >= 0
+
+
+@pytest.mark.asyncio
+async def test_classify_message_intent_invalid_json_fail_open():
+    fake_resp = {
+        "message": {
+            "content": "Not JSON at all"
+        }
+    }
+    mock_resp = httpx.Response(
+        status_code=200,
+        json=fake_resp,
+        request=httpx.Request("POST", "http://localhost:11434/api/chat"),
+    )
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as m_post:
+        m_post.return_value = mock_resp
+        intent, latency_ms = await classify_message_intent("Any message")
+        assert intent == "uncertain"
+        assert latency_ms >= 0
+
+
+@pytest.mark.asyncio
+async def test_run_auto_extract_casual_chat_skips_extraction():
+    from server.services.chat_ai import run_auto_extract
+
+    mock_ctx = {
+        "ctx": "Trip context",
+        "sender": "Asha",
+        "sender_id": 1,
+        "text": "Haha see you tomorrow!",
+        "travelers": 2,
+    }
+
+    with patch("server.services.chat_ai._load", return_value=mock_ctx):
+        with patch("server.services.chat_ai.get_settings") as m_settings:
+            m_settings.return_value.llm_provider = "qwen"
+            with patch("server.ai.local_llm.classify_message_intent", new_callable=AsyncMock) as m_cls:
+                m_cls.return_value = ("casual_chat", 25)
+                with patch("server.ai.agents.extract_preferences", new_callable=AsyncMock) as m_extract:
+                    await run_auto_extract(trip_id=1, message_id=10)
+                    m_cls.assert_called_once_with("Haha see you tomorrow!")
+                    # extract_preferences must NOT be called for casual_chat
+                    m_extract.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_auto_extract_preference_update_proceeds():
+    from server.services.chat_ai import run_auto_extract
+
+    mock_ctx = {
+        "ctx": "Trip context",
+        "sender": "Asha",
+        "sender_id": 1,
+        "text": "I want to visit Goa for 4 days with 20000 budget",
+        "travelers": 2,
+    }
+    fake_pref = ExtractedPreferences(
+        destination="Goa",
+        trip_days=4,
+        budget_per_person=20000,
+        confidence=0.9,
+    )
+
+    with patch("server.services.chat_ai._load", return_value=mock_ctx):
+        with patch("server.services.chat_ai.get_settings") as m_settings:
+            m_settings.return_value.llm_provider = "qwen"
+            with patch("server.ai.local_llm.classify_message_intent", new_callable=AsyncMock) as m_cls:
+                m_cls.return_value = ("preference_update", 35)
+                with patch("server.ai.agents.extract_preferences", new_callable=AsyncMock) as m_extract:
+                    m_extract.return_value = fake_pref
+                    with patch("server.services.chat_ai._save_suggestion", return_value=(1, {})):
+                        with patch("server.services.chat_ai.publish"):
+                            await run_auto_extract(trip_id=1, message_id=10)
+                            m_cls.assert_called_once()
+                            m_extract.assert_called_once_with("I want to visit Goa for 4 days with 20000 budget", "Asha", "Trip context")
+
+
+@pytest.mark.asyncio
+async def test_run_auto_extract_uncertain_fail_open_proceeds():
+    from server.services.chat_ai import run_auto_extract
+
+    mock_ctx = {
+        "ctx": "Trip context",
+        "sender": "Asha",
+        "sender_id": 1,
+        "text": "Maybe mountains?",
+        "travelers": 2,
+    }
+    fake_pref = ExtractedPreferences(confidence=0.5)
+
+    with patch("server.services.chat_ai._load", return_value=mock_ctx):
+        with patch("server.services.chat_ai.get_settings") as m_settings:
+            m_settings.return_value.llm_provider = "qwen"
+            with patch("server.ai.local_llm.classify_message_intent", new_callable=AsyncMock) as m_cls:
+                m_cls.return_value = ("uncertain", 0)
+                with patch("server.ai.agents.extract_preferences", new_callable=AsyncMock) as m_extract:
+                    m_extract.return_value = fake_pref
+                    with patch("server.services.chat_ai._save_suggestion", return_value=(None, {})):
+                        await run_auto_extract(trip_id=1, message_id=10)
+                        m_cls.assert_called_once()
+                        # Failed-open uncertain intent must proceed to extraction
+                        m_extract.assert_called_once()
+

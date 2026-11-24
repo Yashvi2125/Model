@@ -111,6 +111,16 @@ async def run_auto_extract(trip_id: int, message_id: int) -> None:
         ctx = await asyncio.to_thread(_load, trip_id, message_id)
         if not ctx:
             return
+
+        settings = get_settings()
+        if getattr(settings, "llm_provider", "gemini").lower() == "qwen":
+            from server.ai.local_llm import classify_message_intent
+            intent, latency_ms = await classify_message_intent(ctx["text"])
+            if intent == "casual_chat":
+                log.info("intent=casual_chat provider=qwen latency_ms=%d", latency_ms)
+                return
+            log.info("intent=%s provider=qwen latency_ms=%d", intent, latency_ms)
+
         ex = await agents.extract_preferences(ctx["text"], ctx["sender"], ctx["ctx"])
         sid, _ = await asyncio.to_thread(_save_suggestion, trip_id, ctx["sender_id"], message_id, ex, ctx["travelers"])
         if sid:

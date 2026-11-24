@@ -35,6 +35,112 @@ class LocalLLMBusyError(Exception):
     pass
 
 
+LOCAL_INTENT_SYSTEM = (
+    "Classify the traveller's chat message into exactly one intent:\n"
+    "- casual_chat: greetings, banter, jokes, social small talk, unrelated chat\n"
+    "- preference_update: destinations, dates, budgets, activities, hotels, food, travel constraints\n"
+    "- ai_question: asking questions to the AI or asking for recommendations\n"
+    "- itinerary_approval: agreeing or approving a plan, dates, or schedule\n"
+    "Return JSON only with key 'intent'."
+)
+
+ALLOWED_INTENTS = {"casual_chat", "preference_update", "ai_question", "itinerary_approval"}
+
+LOCAL_INTENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "intent": {
+            "type": "string",
+            "enum": [
+                "casual_chat",
+                "preference_update",
+                "ai_question",
+                "itinerary_approval",
+            ],
+        }
+    },
+    "required": ["intent"],
+}
+
+
+async def classify_message_intent(
+    text: str,
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
+    timeout: float = 15.0,
+) -> tuple[str, int]:
+    """Lightweight intent classification using local Ollama (qwen2.5:1.5b-instruct).
+
+    Returns (intent_string, latency_ms).
+    Fails open cleanly returning ("uncertain", latency_ms) on:
+    - Semaphore locked / busy
+    - Connection refused or network error
+    - Timeout
+    - Invalid JSON or unexpected format
+    """
+    settings = get_settings()
+    model_name = model or "qwen2.5:1.5b-instruct"
+    ollama_url = base_url or settings.local_llm_base_url
+
+    # Check semaphore non-blocking: if locked, fail open immediately
+    if _local_semaphore.locked():
+        log.info("Local LLM semaphore is busy; failing open with intent='uncertain'")
+        return "uncertain", 0
+
+    try:
+        await asyncio.wait_for(_local_semaphore.acquire(), timeout=0.001)
+    except (asyncio.TimeoutError, Exception):
+        log.info("Failed to acquire local LLM slot immediately; failing open with intent='uncertain'")
+        return "uncertain", 0
+
+    t0 = time.time()
+    try:
+        payload = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": LOCAL_INTENT_SYSTEM},
+                {"role": "user", "content": f"Message: \"\"\"{text}\"\"\""},
+            ],
+            "stream": False,
+            "options": {
+                "temperature": 0.0,
+                "num_predict": 48,
+            },
+            "format": LOCAL_INTENT_SCHEMA,
+        }
+
+        api_endpoint = f"{ollama_url.rstrip('/')}/api/chat"
+        async with httpx.AsyncClient(timeout=float(timeout)) as client:
+            resp = await client.post(api_endpoint, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+
+        latency_ms = int((time.time() - t0) * 1000)
+        raw_content = data.get("message", {}).get("content", "{}")
+        parsed = json.loads(raw_content)
+        intent = parsed.get("intent", "").strip().lower()
+
+        if intent in ALLOWED_INTENTS:
+            return intent, latency_ms
+        log.warning("Unrecognized intent '%s' from local LLM; failing open with 'uncertain'", intent)
+        return "uncertain", latency_ms
+
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        latency_ms = int((time.time() - t0) * 1000)
+        log.info("Ollama offline/connection error for intent classification (%s); failing open with 'uncertain'", exc)
+        return "uncertain", latency_ms
+    except (httpx.TimeoutException, asyncio.TimeoutError) as exc:
+        latency_ms = int((time.time() - t0) * 1000)
+        log.info("Ollama intent classification timed out (%s); failing open with 'uncertain'", exc)
+        return "uncertain", latency_ms
+    except Exception as exc:  # noqa: BLE001
+        latency_ms = int((time.time() - t0) * 1000)
+        log.info("Ollama intent classification encountered error (%s); failing open with 'uncertain'", exc)
+        return "uncertain", latency_ms
+    finally:
+        _local_semaphore.release()
+
+
 LOCAL_PREF_SYSTEM = (
     "Extract explicit trip preferences for the traveller from their chat message.\n"
     "Return JSON only matching the schema. If small talk or no preferences mentioned, return confidence 0.\n"
