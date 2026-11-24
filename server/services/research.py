@@ -452,6 +452,31 @@ async def geocode_place(query: str) -> Optional[dict]:
     except Exception as exc:  # noqa: BLE001
         log.warning("Open-Meteo fallback geocoding failed for '%s': %s", q_clean, exc)
 
+    # 3. Fallback: WeatherAPI search (authenticated key, works on cloud hosts where Nominatim/Open-Meteo fail)
+    api_key = os.getenv("WEATHERAPI_KEY")
+    if api_key:
+        try:
+            results = await _get("https://api.weatherapi.com/v1/search.json", {"key": api_key, "q": q_clean})
+            if isinstance(results, list) and results:
+                best = results[0]
+                name = best.get("name") or q_clean
+                country = best.get("country")
+                admin = best.get("region")
+                res = {
+                    "name": name,
+                    "label": f"{name} ({country})" if country and country.lower() not in name.lower() else name,
+                    "display_name": f"{name}, {admin}, {country}" if admin and country else f"{name}, {country}" if country else name,
+                    "country": country,
+                    "admin": admin,
+                    "type": "city",
+                    "lat": float(best["lat"]),
+                    "lon": float(best["lon"]),
+                }
+                _geocode_cache[cache_key] = res
+                return res
+        except Exception as exc:  # noqa: BLE001
+            log.warning("WeatherAPI fallback geocoding failed for '%s': %s", q_clean, exc)
+
     _geocode_cache[cache_key] = None
     return None
 
@@ -499,6 +524,7 @@ async def _approximate_location_with_gemini(
     try:
         from server.ai.client import llm_json
         country_str = f", {dest_country}" if dest_country else ""
+        system = "You are a precise geographic locator assistant. Respond with JSON only."
         prompt = (
             f"You are a geographic locator. What are the approximate latitude and longitude coordinates for "
             f"the landmark, place, restaurant, or attraction '{name}' in or near {dest_city}{country_str}?\n"
@@ -507,7 +533,7 @@ async def _approximate_location_with_gemini(
             f"If the place is unknown, fictitious, or cannot be located, return:\n"
             f'{{"found": false, "name": "{name}", "lat": null, "lon": null, "explanation": "unknown"}}'
         )
-        res = await llm_json(prompt)
+        res = await llm_json(system, prompt)
         if isinstance(res, dict) and res.get("found") is True:
             lat = res.get("lat")
             lon = res.get("lon")
@@ -658,6 +684,35 @@ async def _geocode_candidate_within_radius(
                 timed_out = True
             except Exception as exc:
                 log.debug("Tier c Nominatim variant search error for '%s': %s", q, exc)
+
+    # Tier w: WeatherAPI search (authenticated key, reliable on cloud hosts where Nominatim/Photon fail)
+    api_key = os.getenv("WEATHERAPI_KEY")
+    if api_key:
+        for q_cand in [name, f"{name}, {dest_city}"]:
+            try:
+                items = await _get("https://api.weatherapi.com/v1/search.json", {"key": api_key, "q": q_cand})
+                if isinstance(items, list):
+                    for item in items:
+                        lat, lon = float(item["lat"]), float(item["lon"])
+                        dist = haversine_km(dest_lat, dest_lon, lat, lon)
+                        cand_name = item.get("name") or ""
+                        if dist <= max_dist_km and _names_resemble(name, cand_name):
+                            res = {
+                                "name": name,
+                                "display_name": cand_name or name,
+                                "country": item.get("country"),
+                                "admin": item.get("region"),
+                                "lat": lat,
+                                "lon": lon,
+                                "distance_km": round(dist, 1),
+                                "is_approximate": False,
+                            }
+                            _geocode_cache[cache_key] = res
+                            return res, None
+                        else:
+                            outside_dist = dist
+            except Exception as exc:
+                log.debug("Tier w WeatherAPI search error for '%s': %s", q_cand, exc)
 
     # Tier d: Photon API with lat/lon bias near destination, using name and variants
     for v in variants:
