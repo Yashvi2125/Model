@@ -13,7 +13,15 @@ from dataclasses import dataclass, field
 from autogen_agentchat.messages import TextMessage
 
 import config.settings as ai_settings
-from server.ai.client import AIError, ai_status, friendly_error, get_client
+from server.ai.client import (
+    AIError,
+    ai_status,
+    friendly_error,
+    get_client,
+    is_model_available,
+    is_rate_limit_error,
+    mark_model_cooldown,
+)
 from server.config import get_settings
 
 log = logging.getLogger("tripmate.workflow")
@@ -26,6 +34,7 @@ class PlanResult:
     search_used: bool
     transcript: list = field(default_factory=list)
     stop_reason: str = ""
+    model_used: str = ""
 
 
 async def _live_research(query: str) -> tuple[str, bool]:
@@ -76,36 +85,55 @@ async def generate_plan(prompt: str, search_query: str) -> PlanResult:
             client = create_gemini_model_client(model=model_name)
         else:
             client = None
+        # max_turns=2 ensures Turn 1 is Planner and Turn 2 is Researcher, minimizing quota usage
         return create_travel_team(
             planner=create_planner_agent(client=client),
             researcher=create_researcher_agent(client=client),
+            max_turns=2,
         )
 
-    primary_model = ai_settings.GEMINI_MODEL or "gemini-3.8-flash"
-    fallback_model = getattr(ai_settings, "GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
     timeout = get_settings().itinerary_timeout_seconds
+    model_chain = list(ai_settings.GEMINI_MODEL_CHAIN)
+    if not model_chain:
+        model_chain = [ai_settings.GEMINI_MODEL or "gemini-3.5-flash-lite"]
 
-    team = _build_team(primary_model)
-    try:
-        result = await asyncio.wait_for(
-            team.run(task=TextMessage(content=full_task, source="User")), timeout)
-    except asyncio.TimeoutError as exc:
-        raise AIError("The AI took too long to respond. Please try again.") from exc
-    except Exception as exc:  # noqa: BLE001
-        err_str = str(exc).lower()
-        is_recoverable = any(k in err_str for k in ("429", "503", "404", "overloaded", "unavailable", "rate", "resource_exhausted", "not_found"))
-        if is_recoverable and fallback_model and fallback_model != primary_model:
-            log.warning("Primary model %s failed during itinerary team planning (%s); falling back to %s", primary_model, exc, fallback_model)
-            try:
-                fallback_team = _build_team(fallback_model)
-                result = await asyncio.wait_for(
-                    fallback_team.run(task=TextMessage(content=full_task, source="User")), timeout)
-            except asyncio.TimeoutError as f_exc:
-                raise AIError("The AI took too long to respond. Please try again.") from f_exc
-            except Exception as f_exc:  # noqa: BLE001
-                raise friendly_error(f_exc) from f_exc
-        else:
-            raise friendly_error(exc) from exc
+    candidate_models = [m for m in model_chain if is_model_available(m)]
+    if not candidate_models:
+        candidate_models = model_chain
+
+    result = None
+    last_exc = None
+    model_that_answered = None
+
+    for model_name in candidate_models:
+        log.info("Attempting itinerary generation with model '%s'", model_name)
+        try:
+            team = _build_team(model_name)
+            result = await asyncio.wait_for(
+                team.run(task=TextMessage(content=full_task, source="User")),
+                timeout=timeout,
+            )
+            model_that_answered = model_name
+            log.info("Itinerary planning answered successfully by model '%s'", model_name)
+            break
+        except asyncio.TimeoutError as exc:
+            last_exc = exc
+            log.warning("Model '%s' timed out during itinerary planning after %ds", model_name, timeout)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if is_rate_limit_error(exc):
+                mark_model_cooldown(model_name, exc)
+                log.warning("Model '%s' hit rate limit during planning (%s); falling back to next model", model_name, exc)
+            else:
+                err_str = str(exc).lower()
+                is_recoverable = any(k in err_str for k in ("503", "404", "overloaded", "unavailable", "not_found"))
+                if is_recoverable:
+                    log.warning("Model '%s' encountered recoverable error (%s); trying next model in chain", model_name, exc)
+                else:
+                    raise friendly_error(exc) from exc
+
+    if result is None:
+        raise friendly_error(last_exc or RuntimeError("All AI models in chain failed"))
 
     word = ai_settings.TERMINATION_WORD
     transcript, plan, research = [], "", ""
@@ -118,7 +146,18 @@ async def generate_plan(prompt: str, search_query: str) -> PlanResult:
             plan = txt
         elif src == "Researcher":
             research = re.sub(rf"\s*{re.escape(word)}\W*$", "", txt, flags=re.IGNORECASE).strip()
-    if not plan:
-        raise AIError("The planner didn't produce an itinerary. Please try again.")
-    return PlanResult(plan=plan, research=research, search_used=used, transcript=transcript,
-                      stop_reason=str(getattr(result, "stop_reason", "")))
+
+    # Rule 5: A run that ends without a completed itinerary must be reported as a failure
+    # with a Retry button and never saved as a valid version.
+    if not plan or not plan.strip():
+        log.warning("Itinerary run ended without a plan")
+        raise AIError("The planner didn't produce a complete itinerary. Please try again.")
+
+    return PlanResult(
+        plan=plan,
+        research=research,
+        search_used=used,
+        transcript=transcript,
+        stop_reason=str(getattr(result, "stop_reason", "")),
+        model_used=model_that_answered or ai_settings.GEMINI_MODEL,
+    )

@@ -122,6 +122,43 @@ async def test_weather_outside_16_day_window_shows_no_fake_rain(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_weather_fallback_to_weatherapi_when_open_meteo_fails(monkeypatch):
+    """When Open-Meteo returns 429 or fails, the service falls back to WeatherAPI without crashing."""
+    research._weather_cache.clear()
+    start = date(2026, 12, 3)
+    end = date(2026, 12, 8)
+
+    async def mock_open_meteo_fail(url, params):
+        raise RuntimeError("429 Too Many Requests")
+
+    async def mock_weatherapi_success(lat, lon, s, e):
+        return {
+            "forecast_available": True,
+            "forecast_note": None,
+            "date_label": "2026-12-03 to 2026-12-08",
+            "temp_display": "7° / 18°C avg",
+            "avg_high_c": 18,
+            "avg_low_c": 7,
+            "condition": "Partly cloudy",
+            "humidity": 55,
+            "wind_speed_kmh": 10,
+            "rain_chance": 15,
+            "days": [
+                {"date": "2026-12-03", "max_c": 18.0, "min_c": 7.0, "condition": "Partly cloudy", "rain_chance": 15}
+            ],
+        }
+
+    monkeypatch.setattr(research, "_get", mock_open_meteo_fail)
+    monkeypatch.setattr(research, "_fetch_weatherapi", mock_weatherapi_success)
+
+    w = await research._fetch_weather(30.455, 78.071, start, end)
+    assert w is not None
+    assert w["forecast_available"] is True
+    assert w["condition"] == "Partly cloudy"
+    assert w["avg_high_c"] == 18
+
+
+@pytest.mark.asyncio
 async def test_unreachable_services_degrade_gracefully(monkeypatch):
     async def fail_get(url, params, headers=None):
         raise RuntimeError("Service down")

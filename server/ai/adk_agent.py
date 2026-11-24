@@ -188,7 +188,7 @@ def get_adk_runner() -> adk.Runner:
     if _adk_runner is not None:
         return _adk_runner
 
-    model_name = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+    model_name = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
     _session_service = InMemorySessionService()
     _adk_agent = adk.Agent(

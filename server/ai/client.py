@@ -12,12 +12,17 @@ import asyncio
 import json
 import logging
 import re
-from typing import Any
+import time
+from typing import Any, Optional
 
 import config.settings as ai_settings
+from models.gemini_model import get_gemini_semaphore
 from server.config import get_settings
 
 log = logging.getLogger("tripmate.ai")
+
+# Model cooldown dictionary: model_name -> expiration timestamp (epoch seconds)
+_model_cooldown: dict[str, float] = {}
 
 
 class AIError(Exception):
@@ -41,7 +46,98 @@ def ai_status() -> dict:
         "gemini_configured": _configured(ai_settings.GEMINI_API_KEY),
         "tavily_configured": _configured(ai_settings.TAVILY_API_KEY),
         "model": ai_settings.GEMINI_MODEL,
+        "model_chain": getattr(ai_settings, "GEMINI_MODEL_CHAIN", [ai_settings.GEMINI_MODEL]),
     }
+
+
+# ── retryDelay and rate limit helpers ─────────────────────────────────────────
+
+def parse_retry_delay(exc: Exception) -> Optional[float]:
+    """Extract retry delay in seconds from exception string or details if present."""
+    text = str(exc)
+    # Match patterns like: retryDelay': '12.3s' or retryDelay: "15s" or retry_delay { seconds: 12 }
+    m = re.search(r"retryDelay['\"]?\s*:\s*['\"]?(\d+(?:\.\d+)?)\s*s?", text, re.IGNORECASE)
+    if m:
+        try:
+            return float(m.group(1))
+        except (ValueError, TypeError):
+            pass
+    m = re.search(r"retry_after['\"]?\s*:\s*['\"]?(\d+(?:\.\d+)?)", text, re.IGNORECASE)
+    if m:
+        try:
+            return float(m.group(1))
+        except (ValueError, TypeError):
+            pass
+    m = re.search(r"try again in\s+(\d+(?:\.\d+)?)\s*s", text, re.IGNORECASE)
+    if m:
+        try:
+            return float(m.group(1))
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def is_daily_quota_error(exc: Exception) -> bool:
+    """Check if the error is due to daily quota exhaustion (e.g. free tier daily requests limit)."""
+    text = str(exc).lower()
+    if any(k in text for k in ("per day", "requests per day", "daily", "day limit", "free_tier_requests_per_day", "per_day")):
+        return True
+    delay = parse_retry_delay(exc)
+    if delay is not None and delay > 300:
+        return True
+    return False
+
+
+def is_rate_limit_error(exc: Exception) -> bool:
+    """Check if the error is 429, RESOURCE_EXHAUSTED, or rate/quota limit."""
+    text = str(exc).lower()
+    return any(k in text for k in ("429", "rate", "resource_exhausted", "quota", "overloaded"))
+
+
+def format_delay(seconds: Optional[float]) -> str:
+    """Format seconds into human-readable text (e.g. '15s', '2 minutes', '3.5 hours')."""
+    if not seconds or seconds <= 0:
+        return ""
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    if seconds < 3600:
+        mins = max(1, int(round(seconds / 60)))
+        return f"{mins} minute{'s' if mins != 1 else ''}"
+    hours = round(seconds / 3600, 1)
+    hours_val = int(hours) if hours == int(hours) else hours
+    return f"{hours_val} hour{'s' if hours_val != 1 else ''}"
+
+
+def mark_model_cooldown(model_name: str, exc: Exception) -> None:
+    """Put a model in cooldown so subsequent calls try other models in the chain."""
+    delay = parse_retry_delay(exc)
+    if is_daily_quota_error(exc):
+        # Daily quota exhausted: cooldown for the provided delay or 24 hours
+        cooldown_secs = delay if (delay and delay > 300) else 86400.0
+    else:
+        # Per-minute rate limit: cooldown for delay or 60s
+        cooldown_secs = delay if delay else 60.0
+
+    expiry = time.time() + cooldown_secs
+    _model_cooldown[model_name] = expiry
+    log.warning(
+        "Model '%s' placed in cooldown until %f (duration: %s) due to %s",
+        model_name,
+        expiry,
+        format_delay(cooldown_secs),
+        type(exc).__name__,
+    )
+
+
+def is_model_available(model_name: str) -> bool:
+    """Check whether a model has passed its cooldown period."""
+    exp = _model_cooldown.get(model_name)
+    if not exp:
+        return True
+    if time.time() >= exp:
+        _model_cooldown.pop(model_name, None)
+        return True
+    return False
 
 
 # ── native google-genai client ────────────────────────────────────────────────
@@ -77,10 +173,22 @@ def friendly_error(exc: Exception) -> AIError:
         return exc
     text = str(exc).lower()
     log.warning("AI call failed: %s: %s", type(exc).__name__, str(exc)[:300])
+
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or "timed out" in text or "timeout" in text:
         return AIError("The AI took too long to respond. Please try again.")
-    if "429" in text or ("rate" in text and "limit" in text) or "quota" in text or "resource_exhausted" in text:
-        return AIError("The AI service is rate-limited right now. Wait a minute and try again.")
+
+    if is_rate_limit_error(exc):
+        delay = parse_retry_delay(exc)
+        delay_str = format_delay(delay)
+        if is_daily_quota_error(exc):
+            if delay_str:
+                return AIError(f"The daily free AI quota is used up. It will reset later (try again in {delay_str}).")
+            return AIError("The daily free AI quota is used up. It will reset later. Please try again tomorrow.")
+        else:
+            if delay_str:
+                return AIError(f"The AI service is rate-limited right now. Please wait {delay_str} and try again.")
+            return AIError("The AI service is rate-limited right now. Wait a minute and try again.")
+
     if "401" in text or "403" in text or "api key" in text or "permission" in text:
         return AIError("The AI provider rejected the API key. Check GEMINI_API_KEY in the .env file.")
     if ("404" in text and "model" in text) or "not_found" in text or "no longer available" in text:
@@ -95,51 +203,68 @@ def friendly_error(exc: Exception) -> AIError:
 async def llm_text(system: str, user: str, timeout: int | None = None) -> str:
     """
     Single-turn text generation using the google-genai SDK.
-    system + user are combined into a single prompt since the native SDK
-    treats the first turn as user content; we prepend the system instruction.
-    Supports automatic fallback to GEMINI_FALLBACK_MODEL on 429, 503, 404, or overload errors.
+    Iterates through the model chain (GEMINI_MODEL_CHAIN) skipping cooled-down models.
+    Honours the global concurrency limit (2) and logs which model answered.
     """
     effective_timeout = timeout or get_settings().ai_timeout_seconds
-    primary_model = ai_settings.GEMINI_MODEL or "gemini-3.8-flash"
-    fallback_model = getattr(ai_settings, "GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
+    model_chain = list(ai_settings.GEMINI_MODEL_CHAIN)
+    if not model_chain:
+        model_chain = [ai_settings.GEMINI_MODEL or "gemini-3.5-flash-lite"]
+
+    # Filter out models currently in cooldown; if all are in cooldown, try all as fallback
+    candidate_models = [m for m in model_chain if is_model_available(m)]
+    if not candidate_models:
+        candidate_models = model_chain
 
     client = _get_genai_client()
     prompt = f"{system}\n\n{user}"
-
     import google.genai.types as genai_types
 
     async def _call_model(model_name: str):
-        return await asyncio.wait_for(
-            asyncio.to_thread(
-                client.models.generate_content,
-                model=model_name,
-                contents=prompt,
-                config=genai_types.GenerateContentConfig(
-                    system_instruction=system,
-                    temperature=0.4,
+        sem = get_gemini_semaphore()
+        async with sem:
+            return await asyncio.wait_for(
+                asyncio.to_thread(
+                    client.models.generate_content,
+                    model=model_name,
+                    contents=prompt,
+                    config=genai_types.GenerateContentConfig(
+                        system_instruction=system,
+                        temperature=0.4,
+                    ),
                 ),
-            ),
-            timeout=effective_timeout,
-        )
+                timeout=effective_timeout,
+            )
 
+    last_exc = None
     response = None
-    try:
-        response = await _call_model(primary_model)
-    except asyncio.TimeoutError as exc:
-        raise AIError("The AI took too long to respond. Please try again.") from exc
-    except Exception as exc:  # noqa: BLE001
-        err_str = str(exc).lower()
-        is_recoverable = any(k in err_str for k in ("429", "503", "404", "overloaded", "unavailable", "rate", "resource_exhausted", "not_found"))
-        if is_recoverable and fallback_model and fallback_model != primary_model:
-            log.warning("Primary model %s failed (%s); falling back to %s", primary_model, exc, fallback_model)
-            try:
-                response = await _call_model(fallback_model)
-            except asyncio.TimeoutError as f_exc:
-                raise AIError("The AI took too long to respond. Please try again.") from f_exc
-            except Exception as f_exc:  # noqa: BLE001
-                raise friendly_error(f_exc) from f_exc
-        else:
-            raise friendly_error(exc) from exc
+    model_that_answered = None
+
+    for model_name in candidate_models:
+        try:
+            response = await _call_model(model_name)
+            model_that_answered = model_name
+            log.info("AI call answered successfully by '%s'", model_name)
+            break
+        except asyncio.TimeoutError as exc:
+            last_exc = exc
+            log.warning("AI model '%s' timed out after %ds", model_name, effective_timeout)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if is_rate_limit_error(exc):
+                mark_model_cooldown(model_name, exc)
+                log.warning("AI model '%s' rate limited (%s); falling back to next model", model_name, exc)
+            else:
+                err_str = str(exc).lower()
+                is_recoverable = any(k in err_str for k in ("503", "404", "overloaded", "unavailable", "not_found"))
+                if is_recoverable:
+                    log.warning("AI model '%s' encountered recoverable error (%s); trying next model", model_name, exc)
+                else:
+                    # Non-recoverable error (e.g. auth 401/403)
+                    raise friendly_error(exc) from exc
+
+    if response is None:
+        raise friendly_error(last_exc or RuntimeError("All AI models in chain failed"))
 
     # Extract text
     try:

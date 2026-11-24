@@ -87,7 +87,9 @@ def _finish_ok(itinerary_id: int, res) -> int:
         it = db.get(Itinerary, itinerary_id)
         it.status, it.plan_markdown, it.research_markdown = "succeeded", res.plan, res.research
         it.days, it.transcript, it.search_used = parse_itinerary(res.plan), res.transcript, res.search_used
-        it.model, it.completed_at = s.GEMINI_MODEL, utcnow()
+        model_name = getattr(res, "model_used", None) or s.GEMINI_MODEL
+        it.model, it.completed_at = model_name, utcnow()
+        log.info("Itinerary v%d generated successfully using model '%s'", it.version, it.model)
         trip_obj = db.get(Trip, it.trip_id)
         trip_obj.status = "itinerary_ready"
         db.commit()

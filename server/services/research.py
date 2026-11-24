@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 import re
 import time
 from typing import Any, Optional
@@ -722,6 +723,117 @@ async def _geocode_candidate_within_radius(
     return None, miss_reason
 
 
+async def _fetch_weatherapi(lat: float, lon: float, start: date, end: date) -> Optional[dict]:
+    """Fallback weather fetch using WeatherAPI.com when Open-Meteo is unavailable or rate-limited."""
+    api_key = os.getenv("WEATHERAPI_KEY")
+    if not api_key:
+        return None
+
+    today = date.today()
+    days_to_fetch = min(max((end - today).days + 1, 1), 14)
+
+    url = "https://api.weatherapi.com/v1/forecast.json"
+    params = {
+        "key": api_key,
+        "q": f"{lat:.5f},{lon:.5f}",
+        "days": days_to_fetch,
+        "aqi": "no",
+        "alerts": "no",
+    }
+    req_headers = {"User-Agent": _USER_AGENT}
+    async with httpx.AsyncClient(timeout=10, headers=req_headers) as client:
+        r = await client.get(url, params=params)
+        r.raise_for_status()
+        data = r.json()
+
+    curr = data.get("current") or {}
+    forecast = data.get("forecast") or {}
+    fdays = forecast.get("forecastday") or []
+
+    in_trip_days = []
+    max_list = []
+    min_list = []
+    rain_list = []
+    wind_list = []
+    cond_list = []
+
+    for fd in fdays:
+        d_str = fd.get("date")
+        if start.isoformat() <= d_str <= end.isoformat():
+            day_info = fd.get("day") or {}
+            mx = day_info.get("maxtemp_c")
+            mn = day_info.get("mintemp_c")
+            cond = day_info.get("condition", {}).get("text")
+            rain = day_info.get("daily_chance_of_rain")
+            wind = day_info.get("maxwind_kph")
+
+            in_trip_days.append({
+                "date": d_str,
+                "max_c": round(mx, 1) if mx is not None else None,
+                "min_c": round(mn, 1) if mn is not None else None,
+                "condition": cond or "Not available",
+                "rain_chance": rain if rain is not None else None,
+            })
+            if mx is not None:
+                max_list.append(mx)
+            if mn is not None:
+                min_list.append(mn)
+            if rain is not None:
+                rain_list.append(rain)
+            if wind is not None:
+                wind_list.append(wind)
+            if cond:
+                cond_list.append(cond)
+
+    if in_trip_days and max_list and min_list:
+        avg_max = sum(max_list) / len(max_list)
+        avg_min = sum(min_list) / len(min_list)
+        avg_rain = round(sum(rain_list) / len(rain_list)) if rain_list else None
+        avg_wind = round(sum(wind_list) / len(wind_list)) if wind_list else None
+        top_cond = Counter(cond_list).most_common(1)[0][0] if cond_list else "Not available"
+        date_label = f"{in_trip_days[0]['date']} to {in_trip_days[-1]['date']}"
+        total_trip_days = (end - start).days + 1
+        note = None if len(in_trip_days) >= total_trip_days else f"Showing forecast for days within the 14-day window ({len(in_trip_days)} of {total_trip_days} days). Future days will update as your trip approaches."
+
+        return {
+            "forecast_available": True,
+            "forecast_note": note,
+            "date_label": date_label,
+            "temp_display": f"{round(avg_min)}° / {round(avg_max)}°C avg",
+            "avg_high_c": round(avg_max),
+            "avg_low_c": round(avg_min),
+            "condition": top_cond,
+            "humidity": round(curr.get("humidity")) if curr.get("humidity") is not None else None,
+            "wind_speed_kmh": avg_wind,
+            "rain_chance": avg_rain,
+            "days": in_trip_days,
+        }
+    else:
+        temp = curr.get("temp_c")
+        humidity = curr.get("humidity")
+        wind = curr.get("wind_kph")
+        cond = curr.get("condition", {}).get("text")
+
+        if end < today:
+            note = "Trip dates are in the past. Forecast data is not available for past dates. Showing current conditions instead."
+        else:
+            note = "Trip dates are more than 14 days away. Forecasts only cover the next 14 days. Showing current conditions instead."
+
+        return {
+            "forecast_available": False,
+            "forecast_note": note,
+            "date_label": "Current conditions",
+            "temp_display": f"{round(temp)}°C" if temp is not None else "Not available",
+            "avg_high_c": None,
+            "avg_low_c": None,
+            "condition": cond or "Not available",
+            "humidity": round(humidity) if humidity is not None else None,
+            "wind_speed_kmh": round(wind) if wind is not None else None,
+            "rain_chance": None,
+            "days": in_trip_days,
+        }
+
+
 async def _fetch_weather(lat: float, lon: float, start: date, end: date) -> Optional[dict]:
     """Fetch weather with honest date checks, null guarding, and plain-language notes."""
     key = f"{lat:.3f},{lon:.3f}|{start}|{end}"
@@ -837,7 +949,15 @@ async def _fetch_weather(lat: float, lon: float, start: date, end: date) -> Opti
         _weather_cache[key] = (time.time(), data)
         return data
     except Exception as exc:  # noqa: BLE001
-        log.warning("Weather fetch failed for (%s, %s): %s", lat, lon, exc)
+        log.warning("Open-Meteo weather fetch failed for (%s, %s): %s; trying WeatherAPI fallback", lat, lon, exc)
+        try:
+            w_api = await _fetch_weatherapi(lat, lon, start, end)
+            if w_api is not None:
+                _weather_cache[key] = (time.time(), w_api)
+                return w_api
+        except Exception as fb_exc:  # noqa: BLE001
+            log.warning("WeatherAPI fallback fetch also failed for (%s, %s): %s", lat, lon, fb_exc)
+
         return {
             "forecast_available": False,
             "forecast_note": "The weather service could not be reached. Try again in a moment.",
@@ -955,7 +1075,7 @@ async def _resolve_stops_background(
                 "is_resolving": False,
                 "pending_count": 0,
                 "status_message": None,
-                "attribution": "Geocoding: © OpenStreetMap contributors (Nominatim), Photon & Open-Meteo. Weather: Open-Meteo.com.",
+                "attribution": "Geocoding: © OpenStreetMap contributors (Nominatim), Photon & Open-Meteo. Weather: Open-Meteo.com & WeatherAPI.com.",
                 "errors": []
             }
             _cache[cache_key] = (time.time(), final_out)
@@ -995,7 +1115,7 @@ async def overview(
         "is_resolving": False,
         "pending_count": 0,
         "status_message": None,
-        "attribution": "Geocoding: © OpenStreetMap contributors (Nominatim), Photon & Open-Meteo. Weather: Open-Meteo.com.",
+        "attribution": "Geocoding: © OpenStreetMap contributors (Nominatim), Photon & Open-Meteo. Weather: Open-Meteo.com & WeatherAPI.com.",
         "errors": []
     }
 

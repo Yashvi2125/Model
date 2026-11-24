@@ -10,8 +10,13 @@ load_dotenv()
 
 # Google Gemini settings
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
-GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
+GEMINI_MODEL_CHAIN_STR = os.getenv("GEMINI_MODEL_CHAIN", "gemini-3.5-flash-lite,gemini-3.1-flash-lite")
+GEMINI_MODEL_CHAIN = [m.strip() for m in GEMINI_MODEL_CHAIN_STR.split(",") if m.strip()]
+GEMINI_MODEL = os.getenv("GEMINI_MODEL") or (GEMINI_MODEL_CHAIN[0] if GEMINI_MODEL_CHAIN else "gemini-3.5-flash-lite")
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL") or (GEMINI_MODEL_CHAIN[1] if len(GEMINI_MODEL_CHAIN) > 1 else GEMINI_MODEL)
+
+# Weather service API keys
+WEATHERAPI_KEY = os.getenv("WEATHERAPI_KEY")
 
 # Backwards compatibility alias
 MODEL = GEMINI_MODEL
