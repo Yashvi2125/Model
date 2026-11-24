@@ -32,12 +32,25 @@ export default function ItineraryPage() {
   const { trip } = useTrip();
   const qc = useQueryClient(); const toast = useToast();
   const [showRaw, setShowRaw] = useState(false); const [regen, setRegen] = useState(false);
+  const [swappingDay, setSwappingDay] = useState<number | null>(null);
+  const [swapInstruction, setSwapInstruction] = useState("");
   const q = useQuery({ queryKey: ["itinerary", trip.id], queryFn: () => api<Itinerary | null>(`/api/trips/${trip.id}/itinerary`),
     refetchInterval: (query) => (query.state.data?.status === "running" ? 4000 : false) });
   const budget = useQuery({ queryKey: ["budget", trip.id], queryFn: () => api<BudgetData>(`/api/trips/${trip.id}/budget`), enabled: q.data?.status === "succeeded" });
   const gen = useMutation({
     mutationFn: (instructions: string) => post<Itinerary>(`/api/trips/${trip.id}/itinerary/generate`, { instructions }),
     onSuccess: (it) => { qc.setQueryData(["itinerary", trip.id], it); setRegen(false); toast.success("Planning started. This can take a minute or two."); },
+    onError: (e) => toast.error(errorMessage(e)),
+  });
+  const swapMutation = useMutation({
+    mutationFn: ({ day, instruction }: { day: number; instruction: string }) =>
+      post<Itinerary>(`/api/trips/${trip.id}/itinerary/days/${day}/swap`, { instruction }),
+    onSuccess: (it) => {
+      qc.setQueryData(["itinerary", trip.id], it);
+      setSwappingDay(null);
+      setSwapInstruction("");
+      toast.success("Day updated successfully!");
+    },
     onError: (e) => toast.error(errorMessage(e)),
   });
   const it = q.data;
@@ -96,7 +109,56 @@ export default function ItineraryPage() {
         <ol className="space-y-5">
           {d.days.map((day) => (
             <li key={day.day} className="card overflow-hidden">
-              <h3 className="border-b border-sand-200 bg-lagoon-50 px-5 py-3 text-lg font-semibold text-lagoon-800">{day.title}</h3>
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-sand-200 bg-lagoon-50 px-5 py-3">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-lg font-semibold text-lagoon-800">{day.title}</h3>
+                  {(day as any)._provider && (
+                    <span className="rounded-full bg-lagoon-200/80 px-2 py-0.5 text-[10px] font-medium text-lagoon-800">
+                      {(day as any)._provider === "qwen" ? "Qwen 2.5 (Local)" : "Gemini"}
+                    </span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 rounded-md border border-lagoon-300 bg-white px-2.5 py-1 text-xs font-medium text-lagoon-700 hover:bg-lagoon-100"
+                  onClick={() => {
+                    setSwappingDay(swappingDay === day.day ? null : day.day);
+                    setSwapInstruction("");
+                  }}
+                >
+                  <Sparkles className="h-3.5 w-3.5 text-sun-500" />
+                  {swappingDay === day.day ? "Cancel" : "Customize Day"}
+                </button>
+              </div>
+              {swappingDay === day.day && (
+                <div className="border-b border-sand-200 bg-sand-50 p-3.5">
+                  <p className="mb-1.5 text-xs font-medium text-ink-600">
+                    What would you like to change for Day {day.day}? (e.g. "replace dinner with a vegetarian rooftop café")
+                  </p>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      className="input text-sm"
+                      placeholder="e.g. replace dinner with a budget vegetarian spot"
+                      value={swapInstruction}
+                      onChange={(e) => setSwapInstruction(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && swapInstruction.trim()) {
+                          swapMutation.mutate({ day: day.day, instruction: swapInstruction.trim() });
+                        }
+                      }}
+                    />
+                    <Button
+                      className="!py-1 text-xs"
+                      loading={swapMutation.isPending}
+                      disabled={!swapInstruction.trim()}
+                      onClick={() => swapMutation.mutate({ day: day.day, instruction: swapInstruction.trim() })}
+                    >
+                      Update Day
+                    </Button>
+                  </div>
+                </div>
+              )}
               <div className="space-y-4 p-5">
                 {day.intro && <Markdown>{day.intro}</Markdown>}
                 {day.sections.length > 0 ? day.sections.map((s, i) => { const P = PERIODS[s.period]; return (

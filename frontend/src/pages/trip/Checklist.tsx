@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, Sparkles, Trash2 } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { Alert, PageLoader, QueryError, Button } from "../../components/ui";
 import { useToast } from "../../context/Toast";
@@ -22,6 +22,15 @@ export default function Checklist() {
   const assign = useMutation({ mutationFn: ({ id, uid }: { id: number; uid: number | null }) => patch(`${base}/${id}`, uid === null ? { clear_assignee: true } : { assignee_id: uid }), onSuccess: refresh, onError: (e) => toast.error(errorMessage(e)) });
   const add = useMutation({ mutationFn: (t: string) => post<ChecklistItem>(base, { text: t }), onSuccess: () => { setText(""); refresh(); }, onError: (e) => toast.error(errorMessage(e)) });
   const remove = useMutation({ mutationFn: (id: number) => del(`${base}/${id}`), onSuccess: refresh, onError: (e) => toast.error(errorMessage(e)) });
+  const generateList = useMutation({
+    mutationFn: () => post<{ added: number; provider: string; items: ChecklistItem[] }>(`${base}/generate`),
+    onSuccess: (data) => {
+      refresh();
+      const provName = data.provider === "qwen" ? "Qwen 2.5 (Local)" : "Gemini";
+      toast.success(`Added ${data.added} packing items via ${provName}!`);
+    },
+    onError: (e) => toast.error(errorMessage(e)),
+  });
   const submit = (e: FormEvent) => { e.preventDefault(); if (text.trim()) add.mutate(text.trim()); };
 
   if (q.isLoading) return <PageLoader />;
@@ -29,7 +38,20 @@ export default function Checklist() {
   const done = q.data.filter((i) => i.done).length; const total = q.data.length;
   return (
     <div className="mx-auto max-w-2xl space-y-5">
-      <div><h2 className="text-2xl font-bold">Pre-trip checklist</h2><p className="text-ink-500">Preparation tasks for the group. These are reminders, not bookings.</p></div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-bold">Pre-trip checklist</h2>
+          <p className="text-ink-500">Preparation tasks for the group. These are reminders, not bookings.</p>
+        </div>
+        <Button
+          variant="secondary"
+          className="!py-1.5 text-sm"
+          loading={generateList.isPending}
+          onClick={() => generateList.mutate()}
+        >
+          <Sparkles className="h-4 w-4 text-sun-500" /> AI Suggest Packing List
+        </Button>
+      </div>
       <Alert kind="info">TripMate AI doesn’t book hotels, flights or transport. Use this list to track what you still need to arrange yourselves.</Alert>
       <div className="card p-5">
         <div className="mb-4"><div className="flex justify-between text-sm"><span className="font-semibold">{done} of {total} done</span><span className="text-ink-500">{total ? Math.round((done / total) * 100) : 0}%</span></div>

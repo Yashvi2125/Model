@@ -10,6 +10,7 @@ Covers:
 - Suggestion metadata (_provider, _model) preserved in suggestion data and ignored during preference application.
 """
 import asyncio
+import json
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -22,7 +23,10 @@ from server.ai.local_llm import (
     classify_message_intent,
     extract_preferences_ollama,
     extract_preferences_with_fallback,
+    generate_packing_list,
     normalize_extracted_json,
+    summarize_chat_messages,
+    swap_itinerary_day,
 )
 from server.config import get_settings
 from server.models import Preference
@@ -410,4 +414,218 @@ async def test_run_auto_extract_uncertain_fail_open_proceeds():
                         m_cls.assert_called_once()
                         # Failed-open uncertain intent must proceed to extraction
                         m_extract.assert_called_once()
+
+
+# ── Tests for Localized Single-Day Itinerary Swaps ────────────────────────────
+
+@pytest.mark.asyncio
+async def test_swap_itinerary_day_qwen_success():
+    day_in = {
+        "day": 2,
+        "title": "Day 2: Beach & Heritage",
+        "intro": "Relaxing day",
+        "sections": [
+            {"period": "morning", "content": "Visit Fort Aguada"},
+            {"period": "afternoon", "content": "Lunch at beach shack"},
+            {"period": "evening", "content": "Dinner at seafood restaurant"},
+        ],
+    }
+    fake_qwen_resp = {
+        "message": {
+            "content": json.dumps({
+                "day": 2,
+                "title": "Day 2: Beach & Vegetarian Delights",
+                "intro": "Relaxing vegetarian-friendly day",
+                "sections": [
+                    {"period": "morning", "content": "Visit Fort Aguada"},
+                    {"period": "afternoon", "content": "Lunch at beach shack"},
+                    {"period": "evening", "content": "Dinner at a budget vegetarian café"},
+                ],
+            })
+        }
+    }
+    mock_resp = httpx.Response(
+        status_code=200,
+        json=fake_qwen_resp,
+        request=httpx.Request("POST", "http://localhost:11434/api/chat"),
+    )
+    with patch("server.ai.local_llm.get_settings") as m_settings:
+        m_settings.return_value.llm_provider = "qwen"
+        m_settings.return_value.local_llm_model = "qwen2.5:1.5b-instruct"
+        m_settings.return_value.local_llm_base_url = "http://localhost:11434"
+        m_settings.return_value.local_llm_timeout = 60
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as m_post:
+            m_post.return_value = mock_resp
+            res, provider = await swap_itinerary_day(day_in, "replace dinner with vegetarian spot", "Goa 4 days")
+            assert provider == "qwen"
+            assert res["day"] == 2
+            assert "vegetarian" in res["sections"][2]["content"].lower()
+
+
+@pytest.mark.asyncio
+async def test_swap_itinerary_day_semaphore_busy_gemini_fallback():
+    day_in = {
+        "day": 1,
+        "title": "Day 1: Arrival",
+        "sections": [{"period": "morning", "content": "Arrive and check in"}],
+    }
+    fake_gemini_resp = {
+        "day": 1,
+        "title": "Day 1: Arrival & Rest",
+        "sections": [{"period": "morning", "content": "Arrive and check in"}],
+    }
+    await _local_semaphore.acquire()
+    try:
+        assert _local_semaphore.locked()
+        with patch("server.ai.local_llm.get_settings") as m_settings:
+            m_settings.return_value.llm_provider = "qwen"
+            with patch("server.ai.local_llm._swap_itinerary_day_gemini", new_callable=AsyncMock) as m_gem:
+                m_gem.return_value = (fake_gemini_resp, "gemini")
+                res, provider = await swap_itinerary_day(day_in, "rest after flight", "Manali")
+                assert provider == "gemini"
+                assert res["day"] == 1
+                m_gem.assert_called_once()
+    finally:
+        _local_semaphore.release()
+
+
+@pytest.mark.asyncio
+async def test_swap_itinerary_day_offline_gemini_fallback():
+    day_in = {"day": 3, "title": "Day 3", "sections": []}
+    fake_gemini_resp = {"day": 3, "title": "Day 3 Patched", "sections": []}
+    with patch("server.ai.local_llm.get_settings") as m_settings:
+        m_settings.return_value.llm_provider = "qwen"
+        m_settings.return_value.local_llm_base_url = "http://127.0.0.1:59999"
+        with patch("httpx.AsyncClient.post", side_effect=httpx.ConnectError("connection refused")):
+            with patch("server.ai.local_llm._swap_itinerary_day_gemini", new_callable=AsyncMock) as m_gem:
+                m_gem.return_value = (fake_gemini_resp, "gemini")
+                res, provider = await swap_itinerary_day(day_in, "add museum", "Jaipur")
+                assert provider == "gemini"
+                m_gem.assert_called_once()
+
+
+# ── Tests for AI Packing Checklist Generator ──────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_generate_packing_list_qwen_success():
+    fake_qwen_resp = {
+        "message": {
+            "content": json.dumps({
+                "items": [
+                    {"text": "Sunscreen SPF 50+", "category": "toiletries"},
+                    {"text": "Swimwear and beach towel", "category": "clothing"},
+                    {"text": "Universal power adapter", "category": "electronics"},
+                ]
+            })
+        }
+    }
+    mock_resp = httpx.Response(
+        status_code=200,
+        json=fake_qwen_resp,
+        request=httpx.Request("POST", "http://localhost:11434/api/chat"),
+    )
+    with patch("server.ai.local_llm.get_settings") as m_settings:
+        m_settings.return_value.llm_provider = "qwen"
+        m_settings.return_value.local_llm_model = "qwen2.5:1.5b-instruct"
+        m_settings.return_value.local_llm_base_url = "http://localhost:11434"
+        m_settings.return_value.local_llm_timeout = 60
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as m_post:
+            m_post.return_value = mock_resp
+            items, provider = await generate_packing_list("Goa beaches 4 days")
+            assert provider == "qwen"
+            assert len(items) == 3
+            assert items[0]["category"] == "toiletries"
+
+
+@pytest.mark.asyncio
+async def test_generate_packing_list_semaphore_busy_gemini_fallback():
+    await _local_semaphore.acquire()
+    try:
+        assert _local_semaphore.locked()
+        with patch("server.ai.local_llm.get_settings") as m_settings:
+            m_settings.return_value.llm_provider = "qwen"
+            with patch("server.ai.local_llm._generate_packing_list_gemini", new_callable=AsyncMock) as m_gem:
+                m_gem.return_value = ([{"text": "Passport", "category": "documents"}], "gemini")
+                items, provider = await generate_packing_list("Dubai trip")
+                assert provider == "gemini"
+                assert len(items) == 1
+                m_gem.assert_called_once()
+    finally:
+        _local_semaphore.release()
+
+
+@pytest.mark.asyncio
+async def test_generate_packing_list_offline_gemini_fallback():
+    with patch("server.ai.local_llm.get_settings") as m_settings:
+        m_settings.return_value.llm_provider = "qwen"
+        with patch("httpx.AsyncClient.post", side_effect=httpx.ConnectError("connection refused")):
+            with patch("server.ai.local_llm._generate_packing_list_gemini", new_callable=AsyncMock) as m_gem:
+                m_gem.return_value = ([{"text": "Warm jacket", "category": "clothing"}], "gemini")
+                items, provider = await generate_packing_list("Manali winter")
+                assert provider == "gemini"
+                m_gem.assert_called_once()
+
+
+# ── Tests for Trip Chat Summarization ("Catch me up") ─────────────────────────
+
+@pytest.mark.asyncio
+async def test_summarize_chat_messages_qwen_success():
+    fake_qwen_resp = {
+        "message": {
+            "content": json.dumps({
+                "bullets": [
+                    "Agreed on travelling to Goa for 4 days",
+                    "Budget capped at 20,000 per person",
+                    "Rohan preferred North Goa; Asha suggested South Goa for quiet beaches",
+                    "Pending decision on renting scooters vs taxi",
+                ]
+            })
+        }
+    }
+    mock_resp = httpx.Response(
+        status_code=200,
+        json=fake_qwen_resp,
+        request=httpx.Request("POST", "http://localhost:11434/api/chat"),
+    )
+    with patch("server.ai.local_llm.get_settings") as m_settings:
+        m_settings.return_value.llm_provider = "qwen"
+        m_settings.return_value.local_llm_model = "qwen2.5:1.5b-instruct"
+        m_settings.return_value.local_llm_base_url = "http://localhost:11434"
+        m_settings.return_value.local_llm_timeout = 60
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as m_post:
+            m_post.return_value = mock_resp
+            bullets, provider = await summarize_chat_messages("Chat log...")
+            assert provider == "qwen"
+            assert len(bullets) == 4
+            assert "Goa" in bullets[0]
+
+
+@pytest.mark.asyncio
+async def test_summarize_chat_messages_semaphore_busy_gemini_fallback():
+    await _local_semaphore.acquire()
+    try:
+        assert _local_semaphore.locked()
+        with patch("server.ai.local_llm.get_settings") as m_settings:
+            m_settings.return_value.llm_provider = "qwen"
+            with patch("server.ai.local_llm._summarize_chat_gemini", new_callable=AsyncMock) as m_gem:
+                m_gem.return_value = (["Decision: Udaipur chosen"], "gemini")
+                bullets, provider = await summarize_chat_messages("Chat log...")
+                assert provider == "gemini"
+                assert len(bullets) == 1
+                m_gem.assert_called_once()
+    finally:
+        _local_semaphore.release()
+
+
+@pytest.mark.asyncio
+async def test_summarize_chat_messages_offline_gemini_fallback():
+    with patch("server.ai.local_llm.get_settings") as m_settings:
+        m_settings.return_value.llm_provider = "qwen"
+        with patch("httpx.AsyncClient.post", side_effect=httpx.ConnectError("connection refused")):
+            with patch("server.ai.local_llm._summarize_chat_gemini", new_callable=AsyncMock) as m_gem:
+                m_gem.return_value = (["Fallback summary"], "gemini")
+                bullets, provider = await summarize_chat_messages("Chat log...")
+                assert provider == "gemini"
+                m_gem.assert_called_once()
+
 

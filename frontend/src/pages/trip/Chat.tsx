@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AtSign, ChevronDown, CircleAlert, RotateCw, Send, Sparkles } from "lucide-react";
 import { Fragment, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Link } from "react-router-dom";
@@ -9,6 +9,7 @@ import { api, errorMessage, post } from "../../lib/api";
 import { dayLabel, timeOf } from "../../lib/format";
 import type { ChatMessage, ConflictsResult, Itinerary, PreferencesOverview } from "../../lib/types";
 import { useAuth } from "../../context/AuthContext";
+import { useToast } from "../../context/Toast";
 
 interface Outgoing { tempId: number; content: string; status: "sending" | "failed"; error?: string }
 
@@ -76,12 +77,22 @@ export default function Chat() {
   const { trip, socket } = useTrip();
   const { user } = useAuth();
   const qc = useQueryClient();
+  const toast = useToast();
   const key = ["messages", trip.id];
   const q = useQuery({ queryKey: key, queryFn: () => api<ChatMessage[]>(`/api/trips/${trip.id}/messages?limit=200`),
     refetchInterval: socket.status === "open" ? false : 5000 });
   const [text, setText] = useState("");
   const [out, setOut] = useState<Outgoing[]>([]);
   const [panel, setPanel] = useState(false);
+  const [summary, setSummary] = useState<{ bullets: string[]; provider: string } | null>(null);
+  const summarize = useMutation({
+    mutationFn: () => post<{ bullets: string[]; provider: string }>(`/api/trips/${trip.id}/messages/summarize`),
+    onSuccess: (data) => {
+      setSummary(data);
+      toast.success("Chat summary ready!");
+    },
+    onError: (e) => toast.error(errorMessage(e)),
+  });
   const endRef = useRef<HTMLDivElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -112,14 +123,53 @@ export default function Chat() {
   return (
     <div className="grid gap-5 lg:grid-cols-[1fr_17rem]">
       <section className="card flex h-[calc(100dvh-13rem)] sm:h-[calc(100dvh-15rem)] min-h-[26rem] flex-col overflow-hidden" aria-label="Group chat">
-        <div className="no-print flex items-center justify-between border-b border-sand-200 px-4 py-2.5 lg:hidden">
-          <button className="flex items-center gap-1.5 text-sm font-semibold text-lagoon-800 min-h-[44px]" aria-expanded={panel} onClick={() => setPanel((p) => !p)}>
-            Group info <ChevronDown className={`h-4 w-4 transition-transform ${panel ? "rotate-180" : ""}`} /></button>
-          <span className="text-xs text-ink-500">{socket.online.length} online</span>
+        <div className="no-print flex items-center justify-between border-b border-sand-200 bg-sand-50/70 px-4 py-2">
+          <div className="flex items-center gap-2">
+            <button className="flex items-center gap-1.5 text-sm font-semibold text-lagoon-800 lg:hidden" aria-expanded={panel} onClick={() => setPanel((p) => !p)}>
+              Group info <ChevronDown className={`h-4 w-4 transition-transform ${panel ? "rotate-180" : ""}`} />
+            </button>
+            <span className="text-xs text-ink-500 lg:hidden">{socket.online.length} online</span>
+            <span className="hidden text-xs font-medium text-ink-500 lg:inline">Group Chat ({msgs.length} messages)</span>
+          </div>
+          <button
+            type="button"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-sand-300 bg-white px-2.5 py-1 text-xs font-semibold text-ink-700 shadow-sm hover:bg-sand-100 disabled:opacity-60"
+            onClick={() => summarize.mutate()}
+            disabled={summarize.isPending}
+          >
+            <Sparkles className="h-3.5 w-3.5 text-sun-500" />
+            {summarize.isPending ? "Summarizing…" : "Catch me up"}
+          </button>
         </div>
         {panel && <div className="max-h-72 overflow-y-auto border-b border-sand-200 bg-sand-50 p-3 lg:hidden"><PlanningPanel tripId={trip.id} /></div>}
 
         <div ref={boxRef} onScroll={onScroll} className="flex-1 space-y-3 overflow-y-auto px-4 py-4" role="log" aria-live="polite" aria-label="Messages">
+          {summary && (
+            <div className="mb-3 rounded-xl border border-lagoon-300 bg-lagoon-50 p-3.5 text-sm shadow-sm">
+              <div className="flex items-center justify-between pb-1.5">
+                <div className="flex items-center gap-1.5 font-semibold text-lagoon-900">
+                  <Sparkles className="h-4 w-4 text-lagoon-600" />
+                  <span>Recent Chat Decisions & Highlights</span>
+                  <span className="rounded-full bg-lagoon-200 px-2 py-0.5 text-[10px] font-medium text-lagoon-800">
+                    {summary.provider === "qwen" ? "Qwen 2.5 (Local)" : "Gemini"}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSummary(null)}
+                  className="rounded px-1.5 py-0.5 text-xs text-ink-500 hover:bg-lagoon-100 hover:text-ink-800"
+                  aria-label="Dismiss summary"
+                >
+                  ✕
+                </button>
+              </div>
+              <ul className="list-disc space-y-1 pl-4 text-[14px] text-ink-700">
+                {summary.bullets.map((b, i) => (
+                  <li key={i}>{b}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           {q.isLoading ? <PageLoader label="Loading messages…" /> : q.error ? <QueryError error={q.error} retry={() => q.refetch()} /> :
             msgs.length === 0 && out.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center text-center text-ink-500"><Sparkles className="mb-3 h-8 w-8 text-lagoon-600" />

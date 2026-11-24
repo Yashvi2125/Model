@@ -10,6 +10,11 @@ from server.ai.client import AIError, ai_status, friendly_error
 from server.db import get_db
 from server.models import Itinerary, User
 from server.schemas import GenerateIn, ItineraryListItem, ItineraryOut
+from pydantic import BaseModel
+
+
+class DaySwapIn(BaseModel):
+    instruction: str
 from server.security import current_user
 from server.services import itinerary_service as svc
 from server.services.access import TripAccess, trip_access
@@ -63,6 +68,66 @@ def generate(body: GenerateIn, a: TripAccess = Depends(trip_access), db: Session
 def _latest_success(db: Session, trip_id: int) -> Optional[Itinerary]:
     return db.scalar(select(Itinerary).where(Itinerary.trip_id == trip_id, Itinerary.status == "succeeded")
                      .order_by(Itinerary.version.desc()))
+
+
+@router.post("/api/trips/{trip_id}/itinerary/days/{day_number}/swap", response_model=ItineraryOut)
+async def swap_day(
+    trip_id: int,
+    day_number: int,
+    body: DaySwapIn,
+    a: TripAccess = Depends(trip_access),
+    db: Session = Depends(get_db),
+):
+    it = _latest_success(db, a.trip.id)
+    if not it:
+        raise HTTPException(404, "No generated itinerary found to edit.")
+
+    days_data = it.days if isinstance(it.days, dict) else {}
+    days_list = list(days_data.get("days", []))
+    target_idx = -1
+    for idx, d in enumerate(days_list):
+        if d.get("day") == day_number:
+            target_idx = idx
+            break
+
+    if target_idx == -1:
+        raise HTTPException(404, f"Day {day_number} not found in this itinerary.")
+
+    from server.services.context import trip_context
+    from server.services import preferences as prefs_svc
+    from server.services.itinerary_parser import extract_structured_places_from_content
+    from server.ai.local_llm import swap_itinerary_day
+
+    pref_rows = prefs_svc.member_prefs(db, a.trip.id)
+    ctx = trip_context(a.trip, pref_rows)
+
+    updated_day, provider = await swap_itinerary_day(days_list[target_idx], body.instruction.strip(), ctx)
+
+    day_places = []
+    for s in updated_day.get("sections", []):
+        day_places.extend(extract_structured_places_from_content(s.get("content", "")))
+    updated_day["places"] = day_places
+    updated_day["_provider"] = provider
+
+    days_list[target_idx] = updated_day
+    days_data["days"] = days_list
+    it.days = dict(days_data)
+
+    # Reconstruct plan_markdown
+    md_parts = [days_data.get("overview", "")]
+    for d in days_list:
+        md_parts.append(f"\n## Day {d.get('day')}: {d.get('title', '')}\n")
+        if d.get("intro"):
+            md_parts.append(f"{d['intro']}\n")
+        for sec in d.get("sections", []):
+            md_parts.append(f"### {sec.get('period', '').title()}\n{sec.get('content', '')}\n")
+    if days_data.get("tail"):
+        md_parts.append(f"\n{days_data['tail']}\n")
+    it.plan_markdown = "\n".join(md_parts).strip()
+
+    db.commit()
+    db.refresh(it)
+    return it
 
 
 def _budget_payload(db: Session, a: TripAccess) -> dict:

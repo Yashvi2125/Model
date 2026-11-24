@@ -408,3 +408,350 @@ async def extract_preferences_with_fallback(
     # Automatic fallback to Gemini gateway
     from server.ai.agents import extract_preferences_gemini
     return await extract_preferences_gemini(text, traveller, trip_ctx)
+
+
+# ── Localized Single-Day Itinerary Swaps ──────────────────────────────────────
+
+DAY_SWAP_SYSTEM = (
+    "You are an expert itinerary editor. Modify ONLY the single-day itinerary provided according to the user's instructions.\n"
+    "Keep unchanged periods intact. Do not change the day number.\n"
+    "Return JSON only matching the schema: {\"day\": int, \"title\": str, \"intro\": str, \"sections\": [{\"period\": \"morning|afternoon|evening|night\", \"content\": str}]}.\n"
+)
+
+DAY_SWAP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "day": {"type": "integer"},
+        "title": {"type": "string"},
+        "intro": {"type": "string"},
+        "sections": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "period": {"type": "string", "enum": ["morning", "afternoon", "evening", "night"]},
+                    "content": {"type": "string"},
+                },
+                "required": ["period", "content"],
+            },
+        },
+    },
+    "required": ["day", "title", "sections"],
+}
+
+
+async def _swap_itinerary_day_gemini(day_data: dict, instruction: str, trip_ctx: str) -> tuple[dict, str]:
+    from server.ai.client import ai_status, llm_json
+    prompt = (
+        f"Trip Context: {trip_ctx}\n\n"
+        f"Current Day Plan (Day {day_data.get('day')}):\n{json.dumps(day_data, ensure_ascii=False)}\n\n"
+        f"User Instruction: {instruction}"
+    )
+    t0 = time.time()
+    data = await llm_json(DAY_SWAP_SYSTEM, prompt, feature="itinerary_day_swap")
+    latency_ms = int((time.time() - t0) * 1000)
+    model = ai_status().get("model", "gemini-3.5-flash-lite")
+    log.info("provider=gemini model=%s latency_ms=%d feature=itinerary_day_swap", model, latency_ms)
+    return data, "gemini"
+
+
+async def swap_itinerary_day(
+    day_data: dict,
+    instruction: str,
+    trip_ctx: str = "",
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
+    timeout: Optional[int] = None,
+) -> tuple[dict, str]:
+    """Swap or customize a single-day itinerary slice.
+
+    Tries local Ollama with non-blocking semaphore (1) and falls back immediately to Gemini.
+    """
+    settings = get_settings()
+    if getattr(settings, "llm_provider", "gemini").lower() != "qwen":
+        return await _swap_itinerary_day_gemini(day_data, instruction, trip_ctx)
+
+    model_name = model or ("qwen2.5:1.5b-instruct" if "1.5b" in getattr(settings, "local_llm_model", "") else getattr(settings, "local_llm_model", "qwen2.5:1.5b-instruct"))
+    ollama_url = base_url or settings.local_llm_base_url
+    timeout_sec = timeout or settings.local_llm_timeout
+
+    if _local_semaphore.locked():
+        log.warning("provider=gemini fallback_reason=semaphore_busy feature=itinerary_day_swap")
+        return await _swap_itinerary_day_gemini(day_data, instruction, trip_ctx)
+
+    try:
+        await asyncio.wait_for(_local_semaphore.acquire(), timeout=0.001)
+    except (asyncio.TimeoutError, Exception):
+        log.warning("provider=gemini fallback_reason=semaphore_busy feature=itinerary_day_swap")
+        return await _swap_itinerary_day_gemini(day_data, instruction, trip_ctx)
+
+    t0 = time.time()
+    try:
+        prompt = (
+            f"Trip Context: {trip_ctx}\n\n"
+            f"Current Day Plan (Day {day_data.get('day')}):\n{json.dumps(day_data, ensure_ascii=False)}\n\n"
+            f"User Instruction: {instruction}"
+        )
+        payload = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": DAY_SWAP_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            "stream": False,
+            "options": {
+                "temperature": 0.0,
+                "num_predict": 384,
+            },
+            "format": DAY_SWAP_SCHEMA,
+        }
+
+        api_endpoint = f"{ollama_url.rstrip('/')}/api/chat"
+        async with httpx.AsyncClient(timeout=float(timeout_sec)) as client:
+            resp = await client.post(api_endpoint, json=payload)
+            resp.raise_for_status()
+            res_data = resp.json()
+
+        latency_ms = int((time.time() - t0) * 1000)
+        raw_content = res_data.get("message", {}).get("content", "{}")
+        parsed = json.loads(raw_content)
+
+        if not isinstance(parsed, dict) or "sections" not in parsed:
+            raise ValueError("Invalid day structure returned")
+
+        # Ensure day number is preserved
+        parsed["day"] = day_data.get("day", parsed.get("day", 1))
+        parsed.setdefault("title", day_data.get("title", f"Day {parsed['day']}"))
+        parsed.setdefault("intro", "")
+
+        log.info("provider=qwen model=%s latency_ms=%d feature=itinerary_day_swap", model_name, latency_ms)
+        if gateway.is_enabled():
+            gateway.record_call(feature="itinerary_day_swap", model=model_name, status=200)
+
+        return parsed, "qwen"
+
+    except Exception as exc:  # noqa: BLE001
+        reason = "timeout" if isinstance(exc, (httpx.TimeoutException, asyncio.TimeoutError)) else "connection_refused" if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)) else "validation_error"
+        log.warning("provider=gemini fallback_reason=%s detail=%s feature=itinerary_day_swap", reason, exc)
+        return await _swap_itinerary_day_gemini(day_data, instruction, trip_ctx)
+    finally:
+        _local_semaphore.release()
+
+
+# ── AI Packing Checklist Generator ───────────────────────────────────────────
+
+PACKING_SYSTEM = (
+    "You are a travel preparation assistant. Suggest 8-12 essential, practical packing items for this trip based on the destination, duration, weather, and activities.\n"
+    "Categorize each item: clothing, electronics, documents, toiletries, gear, or health.\n"
+    "Return JSON only matching the schema: {\"items\": [{\"text\": \"Item description\", \"category\": \"clothing|electronics|documents|toiletries|gear|health\"}]}.\n"
+)
+
+PACKING_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "items": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "category": {"type": "string"},
+                },
+                "required": ["text", "category"],
+            },
+        }
+    },
+    "required": ["items"],
+}
+
+
+async def _generate_packing_list_gemini(trip_ctx: str, focus: Optional[str] = None) -> tuple[list[dict], str]:
+    from server.ai.client import ai_status, llm_json
+    prompt = f"Trip Context:\n{trip_ctx}"
+    if focus:
+        prompt += f"\n\nSpecial Packing Focus: {focus}"
+    t0 = time.time()
+    data = await llm_json(PACKING_SYSTEM, prompt, feature="checklist_generation")
+    latency_ms = int((time.time() - t0) * 1000)
+    model = ai_status().get("model", "gemini-3.5-flash-lite")
+    log.info("provider=gemini model=%s latency_ms=%d feature=checklist_generation", model, latency_ms)
+    items = data.get("items", []) if isinstance(data, dict) else []
+    return items, "gemini"
+
+
+async def generate_packing_list(
+    trip_ctx: str,
+    focus: Optional[str] = None,
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
+    timeout: Optional[int] = None,
+) -> tuple[list[dict], str]:
+    """Generate categorized packing items via local Ollama with instant Gemini fallback."""
+    settings = get_settings()
+    if getattr(settings, "llm_provider", "gemini").lower() != "qwen":
+        return await _generate_packing_list_gemini(trip_ctx, focus)
+
+    model_name = model or ("qwen2.5:1.5b-instruct" if "1.5b" in getattr(settings, "local_llm_model", "") else getattr(settings, "local_llm_model", "qwen2.5:1.5b-instruct"))
+    ollama_url = base_url or settings.local_llm_base_url
+    timeout_sec = timeout or settings.local_llm_timeout
+
+    if _local_semaphore.locked():
+        log.warning("provider=gemini fallback_reason=semaphore_busy feature=checklist_generation")
+        return await _generate_packing_list_gemini(trip_ctx, focus)
+
+    try:
+        await asyncio.wait_for(_local_semaphore.acquire(), timeout=0.001)
+    except (asyncio.TimeoutError, Exception):
+        log.warning("provider=gemini fallback_reason=semaphore_busy feature=checklist_generation")
+        return await _generate_packing_list_gemini(trip_ctx, focus)
+
+    t0 = time.time()
+    try:
+        prompt = f"Trip Context:\n{trip_ctx}"
+        if focus:
+            prompt += f"\n\nSpecial Packing Focus: {focus}"
+
+        payload = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": PACKING_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            "stream": False,
+            "options": {
+                "temperature": 0.0,
+                "num_predict": 384,
+            },
+            "format": PACKING_SCHEMA,
+        }
+
+        api_endpoint = f"{ollama_url.rstrip('/')}/api/chat"
+        async with httpx.AsyncClient(timeout=float(timeout_sec)) as client:
+            resp = await client.post(api_endpoint, json=payload)
+            resp.raise_for_status()
+            res_data = resp.json()
+
+        latency_ms = int((time.time() - t0) * 1000)
+        raw_content = res_data.get("message", {}).get("content", "{}")
+        parsed = json.loads(raw_content)
+        items = parsed.get("items", []) if isinstance(parsed, dict) else []
+
+        if not items:
+            raise ValueError("No packing items generated")
+
+        log.info("provider=qwen model=%s latency_ms=%d feature=checklist_generation", model_name, latency_ms)
+        if gateway.is_enabled():
+            gateway.record_call(feature="checklist_generation", model=model_name, status=200)
+
+        return items, "qwen"
+
+    except Exception as exc:  # noqa: BLE001
+        reason = "timeout" if isinstance(exc, (httpx.TimeoutException, asyncio.TimeoutError)) else "connection_refused" if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)) else "validation_error"
+        log.warning("provider=gemini fallback_reason=%s detail=%s feature=checklist_generation", reason, exc)
+        return await _generate_packing_list_gemini(trip_ctx, focus)
+    finally:
+        _local_semaphore.release()
+
+
+# ── Trip Chat Summarization ("Catch me up") ───────────────────────────────────
+
+CHAT_SUMMARY_SYSTEM = (
+    "Summarize the key decisions, agreed plans, traveller preferences, and pending questions from the recent group trip chat messages.\n"
+    "Output 4-5 concise, actionable bullet points.\n"
+    "Return JSON only matching the schema: {\"bullets\": [\"bullet 1\", \"bullet 2\", ...]}.\n"
+)
+
+CHAT_SUMMARY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "bullets": {
+            "type": "array",
+            "items": {"type": "string"},
+        }
+    },
+    "required": ["bullets"],
+}
+
+
+async def _summarize_chat_gemini(messages_text: str, trip_ctx: str) -> tuple[list[str], str]:
+    from server.ai.client import ai_status, llm_json
+    prompt = f"Trip Context: {trip_ctx}\n\nRecent Chat Messages:\n{messages_text}"
+    t0 = time.time()
+    data = await llm_json(CHAT_SUMMARY_SYSTEM, prompt, feature="chat_summarization")
+    latency_ms = int((time.time() - t0) * 1000)
+    model = ai_status().get("model", "gemini-3.5-flash-lite")
+    log.info("provider=gemini model=%s latency_ms=%d feature=chat_summarization", model, latency_ms)
+    bullets = data.get("bullets", []) if isinstance(data, dict) else []
+    return bullets, "gemini"
+
+
+async def summarize_chat_messages(
+    messages_text: str,
+    trip_ctx: str = "",
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
+    timeout: Optional[int] = None,
+) -> tuple[list[str], str]:
+    """Summarize recent chat into 4-5 bullet points with instant Gemini fallback."""
+    settings = get_settings()
+    if getattr(settings, "llm_provider", "gemini").lower() != "qwen":
+        return await _summarize_chat_gemini(messages_text, trip_ctx)
+
+    model_name = model or ("qwen2.5:1.5b-instruct" if "1.5b" in getattr(settings, "local_llm_model", "") else getattr(settings, "local_llm_model", "qwen2.5:1.5b-instruct"))
+    ollama_url = base_url or settings.local_llm_base_url
+    timeout_sec = timeout or settings.local_llm_timeout
+
+    if _local_semaphore.locked():
+        log.warning("provider=gemini fallback_reason=semaphore_busy feature=chat_summarization")
+        return await _summarize_chat_gemini(messages_text, trip_ctx)
+
+    try:
+        await asyncio.wait_for(_local_semaphore.acquire(), timeout=0.001)
+    except (asyncio.TimeoutError, Exception):
+        log.warning("provider=gemini fallback_reason=semaphore_busy feature=chat_summarization")
+        return await _summarize_chat_gemini(messages_text, trip_ctx)
+
+    t0 = time.time()
+    try:
+        prompt = f"Trip Context: {trip_ctx}\n\nRecent Chat Messages:\n{messages_text}"
+        payload = {
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": CHAT_SUMMARY_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            "stream": False,
+            "options": {
+                "temperature": 0.0,
+                "num_predict": 256,
+            },
+            "format": CHAT_SUMMARY_SCHEMA,
+        }
+
+        api_endpoint = f"{ollama_url.rstrip('/')}/api/chat"
+        async with httpx.AsyncClient(timeout=float(timeout_sec)) as client:
+            resp = await client.post(api_endpoint, json=payload)
+            resp.raise_for_status()
+            res_data = resp.json()
+
+        latency_ms = int((time.time() - t0) * 1000)
+        raw_content = res_data.get("message", {}).get("content", "{}")
+        parsed = json.loads(raw_content)
+        bullets = parsed.get("bullets", []) if isinstance(parsed, dict) else []
+
+        if not bullets:
+            raise ValueError("No bullets returned from summarizer")
+
+        log.info("provider=qwen model=%s latency_ms=%d feature=chat_summarization", model_name, latency_ms)
+        if gateway.is_enabled():
+            gateway.record_call(feature="chat_summarization", model=model_name, status=200)
+
+        return bullets, "qwen"
+
+    except Exception as exc:  # noqa: BLE001
+        reason = "timeout" if isinstance(exc, (httpx.TimeoutException, asyncio.TimeoutError)) else "connection_refused" if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)) else "validation_error"
+        log.warning("provider=gemini fallback_reason=%s detail=%s feature=chat_summarization", reason, exc)
+        return await _summarize_chat_gemini(messages_text, trip_ctx)
+    finally:
+        _local_semaphore.release()
+

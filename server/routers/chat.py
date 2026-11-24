@@ -10,6 +10,12 @@ from server import runtime
 from server.db import SessionLocal, get_db
 from server.models import Message, TripMember
 from server.schemas import MessageIn, MessageOut
+from pydantic import BaseModel
+
+
+class ChatSummaryOut(BaseModel):
+    bullets: list[str]
+    provider: str
 from server.security import COOKIE_NAME, origin_allowed, rate_limit, user_from_token
 from server.services import chat_ai
 from server.services import message_bus
@@ -45,6 +51,44 @@ def send_message(body: MessageIn, a: TripAccess = Depends(trip_access), db: Sess
     elif chat_ai.should_auto_extract(body.content):
         runtime.spawn(chat_ai.run_auto_extract(a.trip.id, m.id))
     return msgs.to_out(m)
+
+
+@router.post("/api/trips/{trip_id}/messages/summarize", response_model=ChatSummaryOut)
+async def summarize_chat(
+    trip_id: int,
+    a: TripAccess = Depends(trip_access),
+    db: Session = Depends(get_db),
+):
+    recent = db.scalars(
+        select(Message)
+        .where(Message.trip_id == a.trip.id, Message.kind != "system")
+        .order_by(Message.id.desc())
+        .limit(20)
+    ).all()
+
+    if len(recent) < 2:
+        return {
+            "bullets": ["Not enough conversation yet to summarize. Chat a bit more about your trip!"],
+            "provider": "local",
+        }
+
+    from server.services.context import trip_context
+    from server.services import preferences as prefs_svc
+    from server.ai.local_llm import summarize_chat_messages
+
+    pref_rows = prefs_svc.member_prefs(db, a.trip.id)
+    ctx = trip_context(a.trip, pref_rows)
+
+    recent_txt = "\n".join(
+        f"{(r.sender.name if r.sender else 'TripMate AI')}: {r.content[:300]}"
+        for r in reversed(recent)
+    )
+
+    bullets, provider = await summarize_chat_messages(recent_txt, trip_ctx=ctx)
+    return {
+        "bullets": bullets,
+        "provider": provider,
+    }
 
 
 def _authorise_ws(token: Optional[str], trip_id: int) -> Optional[int]:
