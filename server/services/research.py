@@ -311,6 +311,7 @@ async def validate_candidate_places_with_llm(destination: str, candidates: list[
 
     try:
         from server.ai.client import llm_json
+        from server.ai.gateway import PRIORITY_DEFERRABLE
         system = "You are a travel geographer. Review candidate place names from an itinerary and filter out non-places."
         prompt = (
             f"Given the destination '{destination}', review the following list of candidate names extracted from an itinerary.\n"
@@ -320,7 +321,7 @@ async def validate_candidate_places_with_llm(destination: str, candidates: list[
             f"Respond with JSON in this format only:\n"
             f'{{"valid_places": ["Exact Name 1", "Exact Name 2"]}}'
         )
-        res = await llm_json(system, prompt)
+        res = await llm_json(system, prompt, feature="map_place_validation", priority=PRIORITY_DEFERRABLE)
         if isinstance(res, dict) and isinstance(res.get("valid_places"), list):
             valid = [p for p in res["valid_places"] if p in candidates or any(p.lower() == c.lower() for c in candidates)]
             _llm_validation_cache[cache_key] = valid
@@ -549,6 +550,7 @@ async def _approximate_location_with_gemini(
     """Optional last resort: ask existing Gemini model (llm_json) for approximate coordinates of well-known places."""
     try:
         from server.ai.client import llm_json
+        from server.ai.gateway import PRIORITY_SKIPPABLE
         country_str = f", {dest_country}" if dest_country else ""
         system = "You are a precise geographic locator assistant. Respond with JSON only."
         prompt = (
@@ -559,7 +561,7 @@ async def _approximate_location_with_gemini(
             f"If the place is unknown, fictitious, or cannot be located, return:\n"
             f'{{"found": false, "name": "{name}", "lat": null, "lon": null, "explanation": "unknown"}}'
         )
-        res = await llm_json(system, prompt)
+        res = await llm_json(system, prompt, feature="map_coordinate_fallback", priority=PRIORITY_SKIPPABLE)
         if isinstance(res, dict) and res.get("found") is True:
             lat = res.get("lat")
             lon = res.get("lon")
@@ -788,30 +790,41 @@ async def _geocode_candidate_within_radius(
             log.debug("Tier d Photon search error for '%s': %s", v, exc)
 
     # Tier e: Optional last resort: ask existing Gemini model (llm_json) for approximate coordinates
+    skipped_for_quota = False
     try:
-        gemini_loc = await _approximate_location_with_gemini(name, dest_city, dest_country)
-        if gemini_loc:
-            lat, lon = gemini_loc["lat"], gemini_loc["lon"]
-            dist = haversine_km(dest_lat, dest_lon, lat, lon)
-            if dist <= max_dist_km:
-                res = {
-                    "name": name,
-                    "display_name": gemini_loc.get("display_name") or f"{name} (approximate location)",
-                    "country": dest_country,
-                    "admin": None,
-                    "lat": lat,
-                    "lon": lon,
-                    "distance_km": round(dist, 1),
-                    "is_approximate": True,
-                }
-                _geocode_cache[cache_key] = res
-                return res, None
-            else:
-                outside_dist = dist
+        from server.ai.gateway import PRIORITY_SKIPPABLE, gateway
+        if gateway.is_enabled() and gateway.should_skip_optional(PRIORITY_SKIPPABLE):
+            skipped_for_quota = True
+            log.info("Skipping Tier-e coordinate approximation for '%s' to conserve AI quota", name)
+        else:
+            gemini_loc = await _approximate_location_with_gemini(name, dest_city, dest_country)
+            if gemini_loc:
+                lat, lon = gemini_loc["lat"], gemini_loc["lon"]
+                dist = haversine_km(dest_lat, dest_lon, lat, lon)
+                if dist <= max_dist_km:
+                    res = {
+                        "name": name,
+                        "display_name": gemini_loc.get("display_name") or f"{name} (approximate location)",
+                        "country": dest_country,
+                        "admin": None,
+                        "lat": lat,
+                        "lon": lon,
+                        "distance_km": round(dist, 1),
+                        "is_approximate": True,
+                    }
+                    _geocode_cache[cache_key] = res
+                    return res, None
+                else:
+                    outside_dist = dist
     except Exception as exc:
         log.debug("Tier e Gemini search error for '%s': %s", name, exc)
 
-    if outside_dist is not None:
+    if skipped_for_quota:
+        miss_reason = "Skipped to save AI quota (will retry in background)"
+        # Short 30s TTL cache so degraded result is never permanent and is retried
+        _geocode_miss_cache[cache_key] = (time.time() - MISS_TTL + 30.0, miss_reason)
+        return None, miss_reason
+    elif outside_dist is not None:
         miss_reason = f"A match was found but too far from the destination ({round(outside_dist)} km)"
     elif timed_out:
         miss_reason = "Lookup timed out"

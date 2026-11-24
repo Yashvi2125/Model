@@ -4,7 +4,7 @@ Helper utility functions for the AutoGen Travel Planner application.
 import json
 from typing import Any
 from autogen_agentchat.conditions import TextMentionTermination
-from config.settings import TERMINATION_WORD
+import config.settings as ai_settings
 
 
 def save_state(agent: Any, filename: str) -> None:
@@ -24,5 +24,7 @@ def load_state(agent: Any, filename: str) -> None:
 def get_termination_condition() -> TextMentionTermination:
     """
     Create a termination condition that halts the chat when the termination word is mentioned.
+    Restricted to Researcher so user prompts and planner turns containing words like 'stop' never halt the chat early.
     """
-    return TextMentionTermination(TERMINATION_WORD)
+    return TextMentionTermination(ai_settings.TERMINATION_WORD, sources=["Researcher"])
+

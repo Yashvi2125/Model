@@ -11,7 +11,21 @@ from fastapi.responses import JSONResponse
 from server import runtime
 from server.ai.client import ai_status
 from server.config import get_settings
-from server.routers import auth, chat, checklist, conflicts, health, merge_preferences, planning, preferences, research, telegram, trips, users
+from server.routers import (
+    ai_usage,
+    auth,
+    chat,
+    checklist,
+    conflicts,
+    health,
+    merge_preferences,
+    planning,
+    preferences,
+    research,
+    telegram,
+    trips,
+    users,
+)
 from server.security import origin_allowed
 from server.services.itinerary_service import mark_stale_runs_failed
 from server.telegram.bot import start_telegram_service, stop_telegram_service
@@ -99,5 +113,5 @@ async def unhandled(_: Request, exc: Exception):
     return JSONResponse({"detail": "Something went wrong on our side. Please try again."}, status_code=500)
 
 
-for r in (health, auth, users, trips, chat, preferences, conflicts, planning, checklist, research, merge_preferences, telegram):
+for r in (health, auth, users, trips, chat, preferences, conflicts, planning, checklist, research, merge_preferences, telegram, ai_usage):
     app.include_router(r.router)

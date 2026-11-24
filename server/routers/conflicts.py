@@ -1,8 +1,10 @@
 import hashlib
+import json
 import logging
+import time
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from server.ai import agents
@@ -22,6 +24,33 @@ router = APIRouter(prefix="/api/trips/{trip_id}/conflicts", tags=["conflicts"])
 
 CHAT_SCAN_LIMIT = 40
 
+# In-memory negative & positive conflict analysis cache: trip_id -> (state_hash, timestamp)
+_conflict_analysis_cache: dict[int, tuple[str, float]] = {}
+
+
+def _compute_trip_conflict_hash(db: Session, trip_id: int) -> str:
+    """Compute state hash for trip members' preferences and recent chat."""
+    rows = prefs.member_prefs(db, trip_id)
+    pref_data = []
+    for u, p in rows:
+        if p:
+            pref_data.append((
+                u.id,
+                p.destination,
+                str(p.start_date),
+                str(p.end_date),
+                p.budget_max,
+                sorted(p.interests or []),
+                p.accommodation,
+                p.dietary,
+                p.notes,
+            ))
+        else:
+            pref_data.append((u.id, None))
+    max_msg_id = db.scalar(select(func.max(Message.id)).where(Message.trip_id == trip_id)) or 0
+    serialized = json.dumps({"prefs": pref_data, "max_msg_id": max_msg_id}, sort_keys=True, default=str)
+    return hashlib.md5(serialized.encode()).hexdigest()
+
 
 def _list(db: Session, a: TripAccess, ai_error=None) -> ConflictsResult:
     rows = db.scalars(select(Conflict).where(Conflict.trip_id == a.trip.id, Conflict.status != "dismissed")
@@ -38,6 +67,11 @@ async def list_conflicts(a: TripAccess = Depends(trip_access), db: Session = Dep
     # If no conflicts exist yet and at least 2 members have shared preferences,
     # auto-run analyze once so the Conflicts tab immediately has data!
     if not res.conflicts and res.members_sharing >= 2:
+        current_hash = _compute_trip_conflict_hash(db, a.trip.id)
+        cached = _conflict_analysis_cache.get(a.trip.id)
+        if cached and cached[0] == current_hash and (time.time() - cached[1] < 3600):
+            # Negative cache hit: already analyzed for this state and produced 0 conflicts; 0 LLM calls!
+            return res
         return await analyze(a, db)
     return res
 
@@ -45,6 +79,8 @@ async def list_conflicts(a: TripAccess = Depends(trip_access), db: Session = Dep
 @router.post("/analyze", response_model=ConflictsResult)
 async def analyze(a: TripAccess = Depends(trip_access), db: Session = Depends(get_db)):
     trip_id, currency = a.trip.id, a.trip.currency
+    current_hash = _compute_trip_conflict_hash(db, trip_id)
+    _conflict_analysis_cache[trip_id] = (current_hash, time.time())
     rows = prefs.member_prefs(db, trip_id)
     detected = rules.detect(rows, currency)
 

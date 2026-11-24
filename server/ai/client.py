@@ -50,48 +50,16 @@ def ai_status() -> dict:
     }
 
 
-# ── retryDelay and rate limit helpers ─────────────────────────────────────────
-
-def parse_retry_delay(exc: Exception) -> Optional[float]:
-    """Extract retry delay in seconds from exception string or details if present."""
-    text = str(exc)
-    # Match patterns like: retryDelay': '12.3s' or retryDelay: "15s" or retry_delay { seconds: 12 }
-    m = re.search(r"retryDelay['\"]?\s*:\s*['\"]?(\d+(?:\.\d+)?)\s*s?", text, re.IGNORECASE)
-    if m:
-        try:
-            return float(m.group(1))
-        except (ValueError, TypeError):
-            pass
-    m = re.search(r"retry_after['\"]?\s*:\s*['\"]?(\d+(?:\.\d+)?)", text, re.IGNORECASE)
-    if m:
-        try:
-            return float(m.group(1))
-        except (ValueError, TypeError):
-            pass
-    m = re.search(r"try again in\s+(\d+(?:\.\d+)?)\s*s", text, re.IGNORECASE)
-    if m:
-        try:
-            return float(m.group(1))
-        except (ValueError, TypeError):
-            pass
-    return None
-
-
-def is_daily_quota_error(exc: Exception) -> bool:
-    """Check if the error is due to daily quota exhaustion (e.g. free tier daily requests limit)."""
-    text = str(exc).lower()
-    if any(k in text for k in ("per day", "requests per day", "daily", "day limit", "free_tier_requests_per_day", "per_day")):
-        return True
-    delay = parse_retry_delay(exc)
-    if delay is not None and delay > 300:
-        return True
-    return False
-
-
-def is_rate_limit_error(exc: Exception) -> bool:
-    """Check if the error is 429, RESOURCE_EXHAUSTED, or rate/quota limit."""
-    text = str(exc).lower()
-    return any(k in text for k in ("429", "rate", "resource_exhausted", "quota", "overloaded"))
+from server.ai.gateway import (
+    PRIORITY_URGENT,
+    QueueTimeoutError,
+    QuotaSkippedError,
+    gateway,
+    is_daily_quota_error,
+    is_overload_error,
+    is_rate_limit_error,
+    parse_retry_delay,
+)
 
 
 def format_delay(seconds: Optional[float]) -> str:
@@ -177,6 +145,9 @@ def friendly_error(exc: Exception) -> AIError:
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or "timed out" in text or "timeout" in text:
         return AIError("The AI took too long to respond. Please try again.")
 
+    if is_overload_error(exc):
+        return AIError("The AI service is temporarily overloaded by Google. Please try again in a moment.")
+
     if is_rate_limit_error(exc):
         delay = parse_retry_delay(exc)
         delay_str = format_delay(delay)
@@ -200,7 +171,13 @@ def friendly_error(exc: Exception) -> AIError:
 
 # ── core LLM helpers (google-genai native) ────────────────────────────────────
 
-async def llm_text(system: str, user: str, timeout: int | None = None) -> str:
+async def llm_text(
+    system: str,
+    user: str,
+    timeout: int | None = None,
+    feature: str = "single_turn",
+    priority: int = PRIORITY_URGENT,
+) -> str:
     """
     Single-turn text generation using the google-genai SDK.
     Iterates through the model chain (GEMINI_MODEL_CHAIN) skipping cooled-down models.
@@ -223,6 +200,13 @@ async def llm_text(system: str, user: str, timeout: int | None = None) -> str:
     async def _call_model(model_name: str):
         sem = get_gemini_semaphore()
         async with sem:
+            if gateway.is_enabled():
+                await gateway.acquire_slot(
+                    model=model_name,
+                    priority=priority,
+                    feature=feature,
+                    timeout=effective_timeout,
+                )
             return await asyncio.wait_for(
                 asyncio.to_thread(
                     client.models.generate_content,
@@ -244,15 +228,33 @@ async def llm_text(system: str, user: str, timeout: int | None = None) -> str:
         try:
             response = await _call_model(model_name)
             model_that_answered = model_name
-            log.info("AI call answered successfully by '%s'", model_name)
+            log.info("AI call answered successfully by '%s' (feature: %s)", model_name, feature)
+            if gateway.is_enabled():
+                gateway.record_call(feature=feature, model=model_name, status=200)
             break
+        except QuotaSkippedError as exc:
+            last_exc = exc
+            log.info("AI call '%s' skipped to save quota", feature)
+            raise AIError(str(exc)) from exc
+        except QueueTimeoutError as exc:
+            last_exc = exc
+            log.warning("AI call '%s' timed out in priority queue: %s", feature, exc)
+            raise AIError("The request waited too long in the queue. Please try again.") from exc
         except asyncio.TimeoutError as exc:
             last_exc = exc
-            log.warning("AI model '%s' timed out after %ds", model_name, effective_timeout)
+            if gateway.is_enabled():
+                gateway.record_call(feature=feature, model=model_name, status="timeout")
+            log.warning("AI model '%s' timed out after %ds (feature: %s)", model_name, effective_timeout, feature)
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
+            if gateway.is_enabled():
+                status_code = getattr(exc, "status_code", None) or ("429" if is_rate_limit_error(exc) else "503" if is_overload_error(exc) else "error")
+                gateway.record_call(feature=feature, model=model_name, status=status_code)
             if is_rate_limit_error(exc):
                 mark_model_cooldown(model_name, exc)
+                delay = parse_retry_delay(exc)
+                if gateway.is_enabled():
+                    gateway.learn_429(model_name, delay)
                 log.warning("AI model '%s' rate limited (%s); falling back to next model", model_name, exc)
             else:
                 err_str = str(exc).lower()
@@ -294,5 +296,11 @@ def extract_json(text: str) -> dict[str, Any]:
     return data
 
 
-async def llm_json(system: str, user: str, timeout: int | None = None) -> dict[str, Any]:
-    return extract_json(await llm_text(system, user, timeout))
+async def llm_json(
+    system: str,
+    user: str,
+    timeout: int | None = None,
+    feature: str = "single_turn",
+    priority: int = PRIORITY_URGENT,
+) -> dict[str, Any]:
+    return extract_json(await llm_text(system, user, timeout, feature=feature, priority=priority))

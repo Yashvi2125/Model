@@ -30,7 +30,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 # Team execution settings
 MAX_TURN = int(os.getenv("MAX_TURN", "7"))
 MAX_TURN_10 = int(os.getenv("MAX_TURN_10", "10"))
-TERMINATION_WORD = os.getenv("TERMINATION_WORD", "stop")
+TERMINATION_WORD = os.getenv("TERMINATION_WORD", "TERMINATE_ITINERARY_PLAN")
 
 
 def validate_config(require_keys: bool = True) -> list[str]:

@@ -208,13 +208,17 @@ def get_adk_runner() -> adk.Runner:
 
 async def ask_adk_advisor(user_id: str, session_id: str, prompt: str) -> str:
     """Interacts with the Google ADK Travel Advisor Agent maintaining session memory."""
+    from server.ai.gateway import gateway
+
     runner = get_adk_runner()
+    model_name = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
     content = types.Content(
         role="user",
         parts=[types.Part.from_text(text=prompt)],
     )
     accumulated_texts = []
-    try:
+
+    async def _run_stream():
         async for event in runner.run_async(
             user_id=user_id,
             session_id=session_id,
@@ -224,8 +228,20 @@ async def ask_adk_advisor(user_id: str, session_id: str, prompt: str) -> str:
                 for p in event.content.parts:
                     if p.text:
                         accumulated_texts.append(p.text)
+
+    try:
+        await asyncio.wait_for(_run_stream(), timeout=60.0)
+        if gateway.is_enabled():
+            gateway.record_call(feature="adk_agent", model=model_name, status=200)
+    except asyncio.TimeoutError:
+        log.warning("ADK runner timed out after 60s for user %s", user_id)
+        if gateway.is_enabled():
+            gateway.record_call(feature="adk_agent", model=model_name, status="timeout")
+        return "I took too long to think about that. Please ask a shorter question or try again."
     except Exception as exc:  # noqa: BLE001
         log.warning("ADK runner execution error: %s", exc)
+        if gateway.is_enabled():
+            gateway.record_call(feature="adk_agent", model=model_name, status="error")
         return f"I ran into an issue answering that: {exc}"
 
     full_reply = "".join(accumulated_texts).strip()

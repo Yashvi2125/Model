@@ -4,11 +4,13 @@ Mirrors main.py's run_planner(): live Tavily research first (when configured), t
 Differences required for a server: a FRESH team/agents per request (module-level ones keep chat history and
 cannot run concurrently), results are collected instead of printed, and a missing Tavily key degrades gracefully.
 """
+import ast
 import asyncio
 import json
 import logging
 import re
 from dataclasses import dataclass, field
+from typing import Any, Optional
 
 from autogen_agentchat.messages import TextMessage
 
@@ -19,9 +21,11 @@ from server.ai.client import (
     friendly_error,
     get_client,
     is_model_available,
+    is_overload_error,
     is_rate_limit_error,
     mark_model_cooldown,
 )
+from server.ai.gateway import gateway
 from server.config import get_settings
 
 log = logging.getLogger("tripmate.workflow")
@@ -32,33 +36,48 @@ class PlanResult:
     plan: str
     research: str
     search_used: bool
-    transcript: list = field(default_factory=list)
+    transcript: list[dict[str, Any]] = field(default_factory=list)
     stop_reason: str = ""
     model_used: str = ""
+
+
+def _parse_structured_data(raw_data: str) -> Any:
+    """Safely parse structured data using ast.literal_eval, fallback to json."""
+    try:
+        return ast.literal_eval(raw_data)
+    except (ValueError, SyntaxError):
+        try:
+            return json.loads(raw_data)
+        except (json.JSONDecodeError, TypeError):
+            return None
 
 
 async def _live_research(query: str) -> tuple[str, bool]:
     if not ai_status()["tavily_configured"]:
         return "", False
     try:
-        from main import parse_structured_data  # existing CLI helper (safe literal parsing)
         from utils.tools import create_travel_specific_search_tool
 
         tool = create_travel_specific_search_tool()
-        raw = await asyncio.to_thread(tool._func, query[:380])
-        if raw.startswith("Search error"):
+        tool_fn = getattr(tool, "_func", None) or getattr(tool, "func", None)
+        if callable(tool_fn):
+            raw = await asyncio.to_thread(tool_fn, query[:380])
+        else:
+            raw = await asyncio.to_thread(getattr(tool, "run", lambda q: ""), query[:380])
+        if isinstance(raw, str) and raw.startswith("Search error"):
             log.warning("Tavily search failed: %s", raw[:200])
             return "", False
-        parsed = parse_structured_data(raw)
-        if parsed is None and "results" not in raw:
+        raw_str = str(raw or "")
+        parsed = _parse_structured_data(raw_str)
+        if parsed is None and "results" not in raw_str:
             return "", False
-        return f"\n\n[Live Verified Research Data from Tavily Search]:\n{raw}\n", True
+        return f"\n\n[Live Verified Research Data from Tavily Search]:\n{raw_str}\n", True
     except Exception as exc:  # noqa: BLE001
         log.warning("Live research unavailable: %s", exc)
         return "", False
 
 
-def _text(msg) -> str:
+def _text(msg: Any) -> str:
     c = getattr(msg, "content", None)
     return c.strip() if isinstance(c, str) else ""
 
@@ -115,12 +134,19 @@ async def generate_plan(prompt: str, search_query: str) -> PlanResult:
             )
             model_that_answered = model_name
             log.info("Itinerary planning answered successfully by model '%s'", model_name)
+            if gateway.is_enabled():
+                gateway.record_call(feature="itinerary_planning", model=model_name, status=200)
             break
         except asyncio.TimeoutError as exc:
             last_exc = exc
+            if gateway.is_enabled():
+                gateway.record_call(feature="itinerary_planning", model=model_name, status="timeout")
             log.warning("Model '%s' timed out during itinerary planning after %ds", model_name, timeout)
         except Exception as exc:  # noqa: BLE001
             last_exc = exc
+            if gateway.is_enabled():
+                status_code = getattr(exc, "status_code", None) or ("429" if is_rate_limit_error(exc) else "503" if is_overload_error(exc) else "error")
+                gateway.record_call(feature="itinerary_planning", model=model_name, status=status_code)
             if is_rate_limit_error(exc):
                 mark_model_cooldown(model_name, exc)
                 log.warning("Model '%s' hit rate limit during planning (%s); falling back to next model", model_name, exc)
@@ -143,7 +169,7 @@ async def generate_plan(prompt: str, search_query: str) -> PlanResult:
             continue
         transcript.append({"source": src, "content": txt})
         if src == "Travel_Planner":
-            plan = txt
+            plan = re.sub(rf"\s*{re.escape(word)}\W*$", "", txt, flags=re.IGNORECASE).strip()
         elif src == "Researcher":
             research = re.sub(rf"\s*{re.escape(word)}\W*$", "", txt, flags=re.IGNORECASE).strip()
 
@@ -159,5 +185,5 @@ async def generate_plan(prompt: str, search_query: str) -> PlanResult:
         search_used=used,
         transcript=transcript,
         stop_reason=str(getattr(result, "stop_reason", "")),
-        model_used=model_that_answered or ai_settings.GEMINI_MODEL,
+        model_used=str(model_that_answered or ai_settings.GEMINI_MODEL or ""),
     )

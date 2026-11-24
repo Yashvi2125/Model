@@ -16,11 +16,13 @@ from server.ai.client import (
     friendly_error,
     is_daily_quota_error,
     is_model_available,
+    is_overload_error,
     is_rate_limit_error,
     llm_text,
     mark_model_cooldown,
     parse_retry_delay,
 )
+from server.ai.gateway import gateway
 from server.ai.workflow import PlanResult, generate_plan
 
 
@@ -94,6 +96,57 @@ def test_friendly_error_per_minute_message():
     assert "20s" in msg
 
 
+def test_unrelated_words_not_classified_as_rate_limit():
+    """Verify that unrelated words containing 'rate' (generate, accurate, operate) are NOT false-positive rate limits."""
+    e1 = Exception("Failed to generate content accurately")
+    assert is_rate_limit_error(e1) is False
+
+    e2 = Exception("The system failed to operate under moderate load")
+    assert is_rate_limit_error(e2) is False
+
+    e3 = Exception("Desperate attempt to curate data")
+    assert is_rate_limit_error(e3) is False
+
+
+def test_overload_error_distinction_from_rate_limit():
+    """503 and 'model is overloaded' must be classified as overload, NEVER as a rate limit."""
+    overload_err = Exception("503 Service Unavailable: The model is overloaded. Please try again later.")
+    assert is_overload_error(overload_err) is True
+    assert is_rate_limit_error(overload_err) is False
+
+    fe = friendly_error(overload_err)
+    assert "overloaded" in fe.user_message.lower()
+    assert "rate-limited" not in fe.user_message.lower()
+
+
+def test_ai_gateway_usage_endpoint(user_a):
+    """GET /api/ai/usage returns metrics without any secrets or prompts."""
+    from tests.web.conftest import make_client
+
+    # Record a test call in gateway
+    gateway.record_call(feature="test_feature", model="test-model", status=200)
+
+    # 1. Unauthenticated request should be rejected (401)
+    unauth = make_client()
+    res_unauth = unauth.get("/api/ai/usage")
+    assert res_unauth.status_code == 401
+
+    # 2. Authenticated request succeeds
+    res = user_a.get("/api/ai/usage")
+    assert res.status_code == 200
+    data = res.json()
+    assert "gateway_enabled" in data
+    assert "total_requests" in data
+    assert "requests_by_feature" in data
+    assert "requests_by_model" in data
+    assert "active_cooldowns_remaining_seconds" in data
+    # Ensure zero secrets leaked
+    text = res.text
+    assert "key" not in text.lower() or "active_cooldowns" in text
+    assert "ai_key" not in text.lower()
+    assert "prompt" not in text.lower()
+
+
 def test_model_cooldown_tracking():
     """Requirement 1(b): Model cooldown marks model unavailable until expired."""
     test_model = "test-model-cooldown-check"
@@ -159,3 +212,116 @@ async def test_workflow_incomplete_plan_raises_failure(monkeypatch):
         with pytest.raises(AIError) as exc_info:
             await generate_plan("Plan a trip", "research query")
         assert "complete itinerary" in str(exc_info.value).lower()
+
+
+def test_token_bucket_rate_limiter():
+    """Verify TokenBucket capacity, consumption, refill rate, and 429 penalty."""
+    from server.ai.gateway import TokenBucket
+
+    tb = TokenBucket(capacity=5.0, refill_rate=1.0)
+    assert tb.available() == 5.0
+    assert tb.consume(1.0) is True
+    assert round(tb.available(), 1) == 4.0
+
+    # Consume all remaining tokens
+    assert tb.consume(4.0) is True
+    assert tb.consume(1.0) is False
+
+    # Simulate 429 with retry delay penalty
+    tb.penalize(delay_seconds=30.0)
+    assert tb.in_cooldown() is True
+    assert tb.available() == 0.0
+    assert tb.consume(1.0) is False
+
+
+@pytest.mark.asyncio
+async def test_priority_queue_starvation_protection():
+    """Verify priority queue ordering and that waiting lower-priority items age to prevent starvation."""
+    from server.ai.gateway import QueueWaiter, PRIORITY_BACKGROUND, PRIORITY_URGENT
+
+    w_urgent = QueueWaiter(priority=PRIORITY_URGENT, model="m", feature="chat_reply", timeout=10.0)
+    w_bg = QueueWaiter(priority=PRIORITY_BACKGROUND, model="m", feature="preference_extraction", timeout=10.0)
+
+    # Initially, urgent has lower numerical score (1.0 vs 3.0) -> higher priority
+    assert w_urgent.effective_priority < w_bg.effective_priority
+
+    # Simulate w_bg waiting for 50 seconds (aging)
+    w_bg.enqueue_time = time.time() - 50.0
+    # Aging boost: 3.0 - (50 * 0.05) = 0.5, which is lower than w_urgent (1.0)!
+    assert w_bg.effective_priority < w_urgent.effective_priority
+
+
+@pytest.mark.asyncio
+async def test_conflict_analysis_negative_caching(client, user_a, user_b):
+    """Opening Conflicts tab repeatedly when no conflicts exist uses cached result (0 LLM calls)."""
+    # Create trip and join both users
+    res = user_a.post("/api/trips", json={
+        "name": "Cache Test Trip",
+        "destination": "Goa",
+        "start_date": "2026-12-01",
+        "end_date": "2026-12-05",
+        "travelers_count": 2,
+    })
+    trip_id = res.json()["id"]
+    code = res.json()["code"]
+    user_b.post("/api/trips/join", json={"code": code})
+
+    # User A and User B share agreeing preferences via /preferences/me (no conflict)
+    user_a.put(f"/api/trips/{trip_id}/preferences/me", json={"interests": ["beach"], "notes": "Relaxation"})
+    user_b.put(f"/api/trips/{trip_id}/preferences/me", json={"interests": ["beach"], "notes": "Relaxation"})
+
+    call_count = 0
+
+    async def fake_resolve(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return {"suggestions": {}, "additional": []}
+
+    with patch("server.ai.agents.resolve_conflicts", side_effect=fake_resolve):
+        # 1. First visit auto-analyzes (1 call)
+        res1 = user_a.get(f"/api/trips/{trip_id}/conflicts")
+        assert res1.status_code == 200
+        assert call_count == 1
+
+        # 2. Repeated visits within cache window use 0 LLM calls!
+        res2 = user_a.get(f"/api/trips/{trip_id}/conflicts")
+        assert res2.status_code == 200
+        assert call_count == 1  # Still 1! No new LLM call!
+
+        res3 = user_b.get(f"/api/trips/{trip_id}/conflicts")
+        assert res3.status_code == 200
+        assert call_count == 1  # Still 1!
+
+
+@pytest.mark.asyncio
+async def test_map_coordinate_fallback_deferred_when_quota_low(monkeypatch):
+    """When AI quota/budget is low, Tier-e coordinate fallback is skipped with short retry TTL."""
+    from server.services.research import _geocode_candidate_within_radius, _geocode_miss_cache, MISS_TTL
+
+    # Mock gateway to report low budget
+    monkeypatch.setattr("server.ai.gateway.gateway.is_enabled", lambda: True)
+    monkeypatch.setattr("server.ai.gateway.gateway.should_skip_optional", lambda p: True)
+    # Mock network GET calls to return empty so early tiers find nothing and reach Tier e
+    monkeypatch.setattr("server.services.research._get", AsyncMock(return_value=[]))
+
+    res, miss_reason = await _geocode_candidate_within_radius(
+        name="Obscure Local Shrine",
+        dest_lat=23.0225,
+        dest_lon=72.5714,
+        dest_city="Ahmedabad",
+        dest_country="India",
+    )
+
+    assert res is None
+    assert "Skipped to save AI quota" in miss_reason
+    assert "will retry in background" in miss_reason
+
+    # Verify not cached as permanent 24h miss
+    cache_key = "obscure local shrine|ahmedabad|23.02,72.57"
+    assert cache_key in _geocode_miss_cache
+    ts, reason = _geocode_miss_cache[cache_key]
+    assert reason == miss_reason
+    # Cache timestamp was set so remaining TTL is short (~30s), not full 24h
+    elapsed_fake = time.time() - ts
+    assert elapsed_fake > (MISS_TTL - 60.0)
+

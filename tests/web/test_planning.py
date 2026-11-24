@@ -174,6 +174,7 @@ def test_research_endpoint_degrades_without_network(user_a, monkeypatch):
 async def test_workflow_runs_real_autogen_team_with_replayed_model(monkeypatch):
     """No mocks of the team itself: the project's real RoundRobinGroupChat + agents run against a scripted model client.
     This proves the web workflow drives the existing agents; it does NOT prove live Gemini works."""
+    import config.settings as ai_settings
     from autogen_ext.models.replay import ReplayChatCompletionClient
 
     import server.ai.workflow as wf
@@ -181,7 +182,7 @@ async def test_workflow_runs_real_autogen_team_with_replayed_model(monkeypatch):
     def scripted():
         return ReplayChatCompletionClient(
             ["## Day 1: Old city\n**Morning**\n- City Palace\n\n## Day 2: Lakes\n**Evening**\n- Boat ride",
-             "Looks good. Carry cash and book the boat early. stop"],
+             f"Looks good. Carry cash and book the boat early. {ai_settings.TERMINATION_WORD}"],
             model_info={"vision": False, "function_calling": True, "json_output": False, "family": "unknown", "structured_output": False})
 
     shared = scripted()  # planner and researcher take turns on one scripted client
@@ -197,6 +198,33 @@ async def test_workflow_runs_real_autogen_team_with_replayed_model(monkeypatch):
     assert res.research == "Looks good. Carry cash and book the boat early."  # termination word stripped
     assert [t["source"] for t in res.transcript] == ["Travel_Planner", "Researcher"]
     assert parse_itinerary(res.plan)["structured"] is True
+
+
+async def test_tavily_research_containing_word_stop_does_not_terminate_early(monkeypatch):
+    """Prove that research text or prompts containing words like 'stop', 'bus stop', 'non-stop'
+    do NOT trigger early termination. The chat continues to the final agent.
+    """
+    import config.settings as ai_settings
+    from autogen_agentchat.messages import TextMessage
+    from utils.utils import get_termination_condition
+
+    # 1. Termination condition does not fire on 'stop' in text
+    cond = get_termination_condition()
+    msg_with_stops = TextMessage(
+        content="Research data: Bus stop located 100m away. Non-stop metro service. Make a quick stop at Lake Pichola.",
+        source="User"
+    )
+    # TextMentionTermination check takes a sequence of messages
+    result = await cond([msg_with_stops])
+    assert result is None  # Must NOT terminate on normal words like 'stop'
+
+    # 2. Only fires on the sentinel termination token
+    msg_with_sentinel = TextMessage(
+        content=f"Final itinerary verified. {ai_settings.TERMINATION_WORD}",
+        source="Researcher"
+    )
+    result_sentinel = await cond([msg_with_sentinel])
+    assert result_sentinel is not None  # Terminates properly on the exact sentinel token
 
 
 def test_conflicts_report_how_many_members_have_shared(user_a, user_b, monkeypatch):

@@ -100,13 +100,39 @@ def create_gemini_model_client(
         },
     )
 
-    # Enforce concurrency limit (2) per individual Gemini request via semaphore
+    # Enforce concurrency limit (2) and central gateway rate limiting/priority queue per Gemini request
     orig_create = client.create
 
     async def throttled_create(*args, **kwargs):
+        from server.ai.gateway import (
+            PRIORITY_URGENT,
+            gateway,
+            is_overload_error,
+            is_rate_limit_error,
+            parse_retry_delay,
+        )
+
         sem = get_gemini_semaphore()
         async with sem:
-            return await orig_create(*args, **kwargs)
+            if gateway.is_enabled():
+                await gateway.acquire_slot(
+                    model=effective_model,
+                    priority=PRIORITY_URGENT,
+                    feature="itinerary_planning",
+                )
+            try:
+                res = await orig_create(*args, **kwargs)
+                if gateway.is_enabled():
+                    gateway.record_call(feature="itinerary_planning", model=effective_model, status=200)
+                return res
+            except Exception as exc:
+                if gateway.is_enabled():
+                    code = getattr(exc, "status_code", None) or ("429" if is_rate_limit_error(exc) else "503" if is_overload_error(exc) else "error")
+                    gateway.record_call(feature="itinerary_planning", model=effective_model, status=code)
+                    if is_rate_limit_error(exc):
+                        delay = parse_retry_delay(exc)
+                        gateway.learn_429(effective_model, delay)
+                raise
 
     client.create = throttled_create
     return client

@@ -15,6 +15,11 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from server.ai.client import AIError, llm_json, llm_text
+from server.ai.gateway import (
+    PRIORITY_BACKGROUND,
+    PRIORITY_INTERACTIVE,
+    PRIORITY_URGENT,
+)
 from server.schemas import INTEREST_IDS
 from server.services.budget import BASES, CATEGORIES
 
@@ -60,7 +65,12 @@ Amounts are plain numbers without separators (8,000 -> 8000)."""
 
 
 async def extract_preferences(text: str, traveller: str, trip_ctx: str) -> ExtractedPreferences:
-    data = await llm_json(PREF_SYSTEM, f"Today: {date.today().isoformat()}\n{trip_ctx}\nTraveller: {traveller}\nMessage: \"\"\"{text}\"\"\"")
+    data = await llm_json(
+        PREF_SYSTEM,
+        f"Today: {date.today().isoformat()}\n{trip_ctx}\nTraveller: {traveller}\nMessage: \"\"\"{text}\"\"\"",
+        feature="preference_extraction",
+        priority=PRIORITY_BACKGROUND,
+    )
     try:
         return ExtractedPreferences.model_validate(data)
     except Exception as exc:  # noqa: BLE001
@@ -81,7 +91,7 @@ async def chat_reply(trip_ctx: str, recent: str, sender: str, text: str, noted: 
     user = (f"{trip_ctx}\n\nRecent chat:\n{recent or '(none)'}\n\n"
             f"{sender} says to you: {text}\n"
             f"{'Preferences detected in this message (saved as suggestions): ' + noted if noted else ''}")
-    return await llm_text(CHAT_SYSTEM, user)
+    return await llm_text(CHAT_SYSTEM, user, feature="chat_reply", priority=PRIORITY_URGENT)
 
 
 # ---------------------------------------------------------------- conflict resolution
@@ -119,7 +129,7 @@ async def resolve_conflicts(trip_ctx: str, detected: list[dict], chat_context: s
     prompt = f"{trip_ctx}\n\nDetected structural disagreements:\n{json.dumps(payload, ensure_ascii=False, default=str)}"
     if chat_context:
         prompt += f"\n\nRecent group chat messages:\n{chat_context}"
-    return await llm_json(CONFLICT_SYSTEM, prompt, timeout=120)
+    return await llm_json(CONFLICT_SYSTEM, prompt, timeout=120, feature="conflict_resolution", priority=PRIORITY_INTERACTIVE)
 
 
 # ---------------------------------------------------------------- chat-based conflict scan
@@ -157,7 +167,7 @@ async def scan_chat_for_conflicts(
         f"Recent group chat (oldest first):\n{recent_messages}"
     )
     try:
-        data = await llm_json(CHAT_SCAN_SYSTEM, user_prompt, timeout=120)
+        data = await llm_json(CHAT_SCAN_SYSTEM, user_prompt, timeout=120, feature="chat_conflict_scan", priority=PRIORITY_BACKGROUND)
     except Exception as exc:  # noqa: BLE001
         log.warning("Chat conflict scan failed: %s", exc)
         return []
@@ -186,7 +196,13 @@ If a range is given use the midpoint. Skip items whose basis is unclear."""
 
 
 async def extract_budget_items(plan: str, currency: str, travelers: int, days: int) -> list[dict]:
-    data = await llm_json(BUDGET_SYSTEM, f"Currency: {currency}. Travellers: {travelers}. Days: {days}.\n\nPLAN:\n{plan[:14000]}", timeout=120)
+    data = await llm_json(
+        BUDGET_SYSTEM,
+        f"Currency: {currency}. Travellers: {travelers}. Days: {days}.\n\nPLAN:\n{plan[:14000]}",
+        timeout=120,
+        feature="budget_extraction",
+        priority=PRIORITY_INTERACTIVE,
+    )
     items = []
     for it in data.get("items", []) if isinstance(data.get("items"), list) else []:
         try:
