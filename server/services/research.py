@@ -408,6 +408,7 @@ def _score_open_meteo_candidate(query: str, item: dict) -> float:
 
 async def geocode_place(query: str) -> Optional[dict]:
     """Geocode a place using OpenStreetMap Nominatim as primary and Open-Meteo as fallback."""
+    global _nominatim_blocked_until
     q_clean = query.strip()
     if not q_clean:
         return None
@@ -479,7 +480,34 @@ async def geocode_place(query: str) -> Optional[dict]:
     except Exception as exc:  # noqa: BLE001
         log.warning("Open-Meteo fallback geocoding failed for '%s': %s", q_clean, exc)
 
-    # 3. Fallback: WeatherAPI search (authenticated key, works on cloud hosts where Nominatim/Open-Meteo fail)
+    # 3. Fallback: Photon (free, unauthenticated, allows cloud IPs)
+    try:
+        data = await _get("https://photon.komoot.io/api/", {"q": q_clean, "limit": 5})
+        features = data.get("features") or [] if isinstance(data, dict) else []
+        if features:
+            best = features[0]
+            coords = best.get("geometry", {}).get("coordinates", [])
+            props = best.get("properties", {})
+            if len(coords) >= 2:
+                p_name = props.get("name") or q_clean
+                country = props.get("country")
+                admin = props.get("state") or props.get("city")
+                res = {
+                    "name": p_name,
+                    "label": f"{p_name} ({country})" if country and country.lower() not in p_name.lower() else p_name,
+                    "display_name": f"{p_name}, {admin}, {country}" if admin and country else f"{p_name}, {country}" if country else p_name,
+                    "country": country,
+                    "admin": admin,
+                    "type": props.get("type", "city"),
+                    "lat": float(coords[1]),
+                    "lon": float(coords[0]),
+                }
+                _geocode_cache[cache_key] = res
+                return res
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Photon fallback geocoding failed for '%s': %s", q_clean, exc)
+
+    # 4. Fallback: WeatherAPI search (authenticated key, works on cloud hosts where Nominatim/Open-Meteo fail)
     api_key = os.getenv("WEATHERAPI_KEY")
     if api_key:
         try:
@@ -511,35 +539,88 @@ async def geocode_place(query: str) -> Optional[dict]:
 async def _query_photon(query: str, lat: float, lon: float) -> list[dict]:
     """Query Photon API (https://photon.komoot.io/api/) with lat/lon bias near destination."""
     try:
-        req_headers = {"User-Agent": _USER_AGENT}
-        async with httpx.AsyncClient(timeout=5.0, headers=req_headers) as c:
-            r = await c.get(
-                "https://photon.komoot.io/api/",
-                params={"q": query, "lat": lat, "lon": lon, "limit": 5}
-            )
-            if r.status_code == 200:
-                data = r.json()
-                features = data.get("features") or []
-                results = []
-                for f in features:
-                    geom = f.get("geometry") or {}
-                    props = f.get("properties") or {}
-                    coords = geom.get("coordinates")
-                    if coords and len(coords) >= 2:
-                        p_name = props.get("name") or query
-                        results.append({
-                            "name": p_name,
-                            "country": props.get("country"),
-                            "admin": props.get("state") or props.get("city"),
-                            "lat": float(coords[1]),
-                            "lon": float(coords[0]),
-                            "type": props.get("type", "landmark"),
-                            "display_name": p_name,
-                        })
-                return results
+        data = await _get(
+            "https://photon.komoot.io/api/",
+            {"q": query, "lat": lat, "lon": lon, "limit": 5}
+        )
+        features = data.get("features") or [] if isinstance(data, dict) else []
+        results = []
+        for f in features:
+            geom = f.get("geometry") or {}
+            props = f.get("properties") or {}
+            coords = geom.get("coordinates")
+            if coords and len(coords) >= 2:
+                p_name = props.get("name") or query
+                results.append({
+                    "name": p_name,
+                    "country": props.get("country"),
+                    "admin": props.get("state") or props.get("city"),
+                    "lat": float(coords[1]),
+                    "lon": float(coords[0]),
+                    "type": props.get("type", "landmark"),
+                    "display_name": p_name,
+                })
+        return results
     except Exception as exc:
         log.debug("Photon query '%s' failed: %s", query, exc)
     return []
+
+
+async def _query_open_meteo_geocoding(query: str, dest_lat: float, dest_lon: float, max_dist_km: float = 150.0) -> list[dict]:
+    """Query Open-Meteo Geocoding API (https://geocoding-api.open-meteo.com/v1/search) and filter near destination."""
+    try:
+        data = await _get(
+            "https://geocoding-api.open-meteo.com/v1/search",
+            {"name": query, "count": 10, "language": "en", "format": "json"}
+        )
+        results = data.get("results") or [] if isinstance(data, dict) else []
+        matched = []
+        for item in results:
+            lat, lon = float(item["latitude"]), float(item["longitude"])
+            dist = haversine_km(dest_lat, dest_lon, lat, lon)
+            if dist <= max_dist_km:
+                p_name = item.get("name") or query
+                matched.append({
+                    "name": p_name,
+                    "country": item.get("country"),
+                    "admin": item.get("admin1"),
+                    "lat": lat,
+                    "lon": lon,
+                    "distance_km": round(dist, 1),
+                    "type": item.get("feature_code", "landmark"),
+                    "display_name": p_name,
+                })
+        return matched
+    except Exception as exc:
+        log.debug("Open-Meteo geocoding query '%s' failed: %s", query, exc)
+    return []
+
+
+def _persist_itinerary_coordinates(itinerary_id: int, new_coords: dict[str, dict]) -> None:
+    """Persist newly resolved coordinates into the itinerary.days JSON column in DB."""
+    if not itinerary_id or not new_coords:
+        return
+    try:
+        from server.db import SessionLocal
+        from server.models import Itinerary
+        with SessionLocal() as session:
+            it = session.get(Itinerary, itinerary_id)
+            if it:
+                days_dict = dict(it.days or {})
+                existing = dict(days_dict.get("cached_coordinates") or {})
+                updated = False
+                for k, v in new_coords.items():
+                    norm_k = k.lower().strip()
+                    if norm_k not in existing or existing[norm_k] != v:
+                        existing[norm_k] = v
+                        updated = True
+                if updated:
+                    days_dict["cached_coordinates"] = existing
+                    it.days = days_dict
+                    session.commit()
+                    log.info("Persisted %d cached coordinates to itinerary %d", len(existing), itinerary_id)
+    except Exception as exc:
+        log.warning("Failed to persist cached coordinates to itinerary %d: %s", itinerary_id, exc)
 
 
 async def _approximate_location_with_gemini(
@@ -585,11 +666,28 @@ async def _geocode_candidate_within_radius(
     dest_city: str,
     dest_country: Optional[str] = None,
     max_dist_km: float = 150.0,
+    cached_coords: Optional[dict[str, dict]] = None,
 ) -> tuple[Optional[dict], Optional[str]]:
-    """Geocode an itinerary stop using a 5-tier lookup pipeline, stopping at first accepted result.
-    Returns (result_dict, miss_reason).
+    """Geocode an itinerary stop using a multi-tier lookup pipeline with automatic cloud fallbacks,
+    stopping at first accepted result. Returns (result_dict, miss_reason).
     """
+    global _nominatim_blocked_until
     cache_key = f"{name.lower().strip()}|{dest_city.lower().strip()}|{dest_lat:.2f},{dest_lon:.2f}"
+
+    # 1. Check persistent coordinates from itinerary.days first (0 external network calls)
+    variants = _generate_name_variants(name)
+    if cached_coords:
+        cand_norm = name.lower().strip()
+        if cand_norm in cached_coords and cached_coords[cand_norm]:
+            c_hit = cached_coords[cand_norm]
+            _geocode_cache[cache_key] = c_hit
+            return c_hit, None
+        for v in variants:
+            v_norm = v.lower().strip()
+            if v_norm in cached_coords and cached_coords[v_norm]:
+                c_hit = cached_coords[v_norm]
+                _geocode_cache[cache_key] = c_hit
+                return c_hit, None
 
     if cache_key in _geocode_cache:
         hit = _geocode_cache[cache_key]
@@ -601,103 +699,20 @@ async def _geocode_candidate_within_radius(
         if time.time() - ts < MISS_TTL:
             return None, reason
 
-    variants = _generate_name_variants(name)
     viewbox = _compute_viewbox(dest_lat, dest_lon, radius_km=30.0)
     outside_dist: Optional[float] = None
     timed_out = False
 
-    # Tier a: Nominatim bounded search with bare place name
-    for v in variants[:2]:
-        try:
-            if not await _throttle_nominatim():
-                break
-            data = await _get(
-                "https://nominatim.openstreetmap.org/search",
-                {"q": v, "format": "json", "limit": 5, "addressdetails": 1, "viewbox": viewbox, "bounded": 1}
-            )
-            if isinstance(data, list) and data:
-                for item in data:
-                    lat, lon = float(item["lat"]), float(item["lon"])
-                    dist = haversine_km(dest_lat, dest_lon, lat, lon)
-                    cand_name = item.get("name") or item.get("display_name") or ""
-                    if dist <= max_dist_km:
-                        if _names_resemble(v, cand_name):
-                            addr = item.get("address", {})
-                            res = {
-                                "name": name,
-                                "display_name": item.get("name") or name,
-                                "country": addr.get("country"),
-                                "admin": addr.get("state") or addr.get("county"),
-                                "lat": lat,
-                                "lon": lon,
-                                "distance_km": round(dist, 1),
-                                "is_approximate": False,
-                            }
-                            _geocode_cache[cache_key] = res
-                            return res, None
-                    else:
-                        outside_dist = dist
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code in (403, 429):
-                _nominatim_blocked_until = time.time() + 3600
-                log.info("Nominatim returned %d. Circuit breaker open for 1h.", exc.response.status_code)
-                break
-        except httpx.TimeoutException:
-            timed_out = True
-        except Exception as exc:
-            log.debug("Tier a Nominatim bounded search error for '%s': %s", v, exc)
-
-    # Tier b: Nominatim bounded search with "<name>, <city>"
-    for v in variants[:2]:
-        q_city = f"{v}, {dest_city}"
-        try:
-            if not await _throttle_nominatim():
-                break
-            data = await _get(
-                "https://nominatim.openstreetmap.org/search",
-                {"q": q_city, "format": "json", "limit": 5, "addressdetails": 1, "viewbox": viewbox, "bounded": 1}
-            )
-            if isinstance(data, list) and data:
-                for item in data:
-                    lat, lon = float(item["lat"]), float(item["lon"])
-                    dist = haversine_km(dest_lat, dest_lon, lat, lon)
-                    cand_name = item.get("name") or item.get("display_name") or ""
-                    if dist <= max_dist_km:
-                        if _names_resemble(v, cand_name):
-                            addr = item.get("address", {})
-                            res = {
-                                "name": name,
-                                "display_name": item.get("name") or name,
-                                "country": addr.get("country"),
-                                "admin": addr.get("state") or addr.get("county"),
-                                "lat": lat,
-                                "lon": lon,
-                                "distance_km": round(dist, 1),
-                                "is_approximate": False,
-                            }
-                            _geocode_cache[cache_key] = res
-                            return res, None
-                    else:
-                        outside_dist = dist
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code in (403, 429):
-                _nominatim_blocked_until = time.time() + 3600
-                log.info("Nominatim returned %d. Circuit breaker open for 1h.", exc.response.status_code)
-                break
-        except httpx.TimeoutException:
-            timed_out = True
-        except Exception as exc:
-            log.debug("Tier b Nominatim city search error for '%s': %s", q_city, exc)
-
-    # Tier c: Name variants (generic words dropped, spelling variants) with Nominatim bounded
-    for v in variants[2:]:
-        for q in [v, f"{v}, {dest_city}"]:
+    # Nominatim bounded searches (Tier a, b, c) — only if Nominatim is not currently throttled/blocked
+    if time.time() >= _nominatim_blocked_until:
+        # Tier a: Nominatim bounded search with bare place name
+        for v in variants[:2]:
             try:
                 if not await _throttle_nominatim():
                     break
                 data = await _get(
                     "https://nominatim.openstreetmap.org/search",
-                    {"q": q, "format": "json", "limit": 5, "addressdetails": 1, "viewbox": viewbox, "bounded": 1}
+                    {"q": v, "format": "json", "limit": 5, "addressdetails": 1, "viewbox": viewbox, "bounded": 1}
                 )
                 if isinstance(data, list) and data:
                     for item in data:
@@ -724,14 +739,155 @@ async def _geocode_candidate_within_radius(
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code in (403, 429):
                     _nominatim_blocked_until = time.time() + 3600
-                    log.info("Nominatim returned %d. Circuit breaker open for 1h.", exc.response.status_code)
+                    log.warning("Nominatim returned %d for '%s'. Tripping circuit breaker for 1h and using cloud fallback geocoders.", exc.response.status_code, v)
                     break
             except httpx.TimeoutException:
                 timed_out = True
             except Exception as exc:
-                log.debug("Tier c Nominatim variant search error for '%s': %s", q, exc)
+                log.debug("Tier a Nominatim bounded search error for '%s': %s", v, exc)
 
-    # Tier w: WeatherAPI search (authenticated key, reliable on cloud hosts where Nominatim/Photon fail)
+        # Tier b: Nominatim bounded search with "<name>, <city>"
+        if time.time() >= _nominatim_blocked_until:
+            for v in variants[:2]:
+                q_city = f"{v}, {dest_city}"
+                try:
+                    if not await _throttle_nominatim():
+                        break
+                    data = await _get(
+                        "https://nominatim.openstreetmap.org/search",
+                        {"q": q_city, "format": "json", "limit": 5, "addressdetails": 1, "viewbox": viewbox, "bounded": 1}
+                    )
+                    if isinstance(data, list) and data:
+                        for item in data:
+                            lat, lon = float(item["lat"]), float(item["lon"])
+                            dist = haversine_km(dest_lat, dest_lon, lat, lon)
+                            cand_name = item.get("name") or item.get("display_name") or ""
+                            if dist <= max_dist_km:
+                                if _names_resemble(v, cand_name):
+                                    addr = item.get("address", {})
+                                    res = {
+                                        "name": name,
+                                        "display_name": item.get("name") or name,
+                                        "country": addr.get("country"),
+                                        "admin": addr.get("state") or addr.get("county"),
+                                        "lat": lat,
+                                        "lon": lon,
+                                        "distance_km": round(dist, 1),
+                                        "is_approximate": False,
+                                    }
+                                    _geocode_cache[cache_key] = res
+                                    return res, None
+                            else:
+                                outside_dist = dist
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code in (403, 429):
+                        _nominatim_blocked_until = time.time() + 3600
+                        log.warning("Nominatim returned %d for '%s'. Circuit breaker open for 1h.", exc.response.status_code, q_city)
+                        break
+                except httpx.TimeoutException:
+                    timed_out = True
+                except Exception as exc:
+                    log.debug("Tier b Nominatim city search error for '%s': %s", q_city, exc)
+
+        # Tier c: Name variants with Nominatim bounded
+        if time.time() >= _nominatim_blocked_until:
+            for v in variants[2:]:
+                for q in [v, f"{v}, {dest_city}"]:
+                    try:
+                        if not await _throttle_nominatim():
+                            break
+                        data = await _get(
+                            "https://nominatim.openstreetmap.org/search",
+                            {"q": q, "format": "json", "limit": 5, "addressdetails": 1, "viewbox": viewbox, "bounded": 1}
+                        )
+                        if isinstance(data, list) and data:
+                            for item in data:
+                                lat, lon = float(item["lat"]), float(item["lon"])
+                                dist = haversine_km(dest_lat, dest_lon, lat, lon)
+                                cand_name = item.get("name") or item.get("display_name") or ""
+                                if dist <= max_dist_km:
+                                    if _names_resemble(v, cand_name):
+                                        addr = item.get("address", {})
+                                        res = {
+                                            "name": name,
+                                            "display_name": item.get("name") or name,
+                                            "country": addr.get("country"),
+                                            "admin": addr.get("state") or addr.get("county"),
+                                            "lat": lat,
+                                            "lon": lon,
+                                            "distance_km": round(dist, 1),
+                                            "is_approximate": False,
+                                        }
+                                        _geocode_cache[cache_key] = res
+                                        return res, None
+                                else:
+                                    outside_dist = dist
+                    except httpx.HTTPStatusError as exc:
+                        if exc.response.status_code in (403, 429):
+                            _nominatim_blocked_until = time.time() + 3600
+                            log.warning("Nominatim returned %d. Circuit breaker open for 1h.", exc.response.status_code)
+                            break
+                    except httpx.TimeoutException:
+                        timed_out = True
+                    except Exception as exc:
+                        log.debug("Tier c Nominatim variant search error for '%s': %s", q, exc)
+
+    # Fallback Tier 1: Photon API with lat/lon bias near destination (free, unauthenticated, allows cloud IPs)
+    for v in variants:
+        try:
+            await asyncio.sleep(0.25)  # polite spacing for cloud requests
+            photon_results = await _query_photon(v, dest_lat, dest_lon)
+            for item in photon_results:
+                lat, lon = item["lat"], item["lon"]
+                dist = haversine_km(dest_lat, dest_lon, lat, lon)
+                cand_name = item.get("name") or item.get("display_name") or ""
+                if dist <= max_dist_km:
+                    if _names_resemble(v, cand_name):
+                        res = {
+                            "name": name,
+                            "display_name": item.get("name") or name,
+                            "country": item.get("country"),
+                            "admin": item.get("admin"),
+                            "lat": lat,
+                            "lon": lon,
+                            "distance_km": round(dist, 1),
+                            "is_approximate": False,
+                        }
+                        _geocode_cache[cache_key] = res
+                        return res, None
+                else:
+                    outside_dist = dist
+        except httpx.TimeoutException:
+            timed_out = True
+        except Exception as exc:
+            log.debug("Tier d Photon search error for '%s': %s", v, exc)
+
+    # Fallback Tier 2: Open-Meteo Geocoding API (free, unauthenticated, allows cloud IPs)
+    for v in variants[:3]:
+        try:
+            await asyncio.sleep(0.25)  # polite spacing
+            om_results = await _query_open_meteo_geocoding(v, dest_lat, dest_lon, max_dist_km=max_dist_km)
+            for item in om_results:
+                lat, lon = item["lat"], item["lon"]
+                dist = item.get("distance_km") or haversine_km(dest_lat, dest_lon, lat, lon)
+                cand_name = item.get("name") or ""
+                if dist <= max_dist_km and _names_resemble(v, cand_name):
+                    res = {
+                        "name": name,
+                        "display_name": cand_name or name,
+                        "country": item.get("country"),
+                        "admin": item.get("admin"),
+                        "lat": lat,
+                        "lon": lon,
+                        "distance_km": round(dist, 1),
+                        "is_approximate": False,
+                    }
+                    _geocode_cache[cache_key] = res
+                    return res, None
+        except Exception as exc:
+            log.debug("Tier om Open-Meteo geocoding search error for '%s': %s", v, exc)
+
+    # Tier w: WeatherAPI search (if key configured)
     api_key = os.getenv("WEATHERAPI_KEY")
     if api_key:
         for q_cand in [name, f"{name}, {dest_city}"]:
@@ -760,36 +916,7 @@ async def _geocode_candidate_within_radius(
             except Exception as exc:
                 log.debug("Tier w WeatherAPI search error for '%s': %s", q_cand, exc)
 
-    # Tier d: Photon API with lat/lon bias near destination, using name and variants
-    for v in variants:
-        try:
-            photon_results = await _query_photon(v, dest_lat, dest_lon)
-            for item in photon_results:
-                lat, lon = item["lat"], item["lon"]
-                dist = haversine_km(dest_lat, dest_lon, lat, lon)
-                cand_name = item.get("name") or item.get("display_name") or ""
-                if dist <= max_dist_km:
-                    if _names_resemble(v, cand_name):
-                        res = {
-                            "name": name,
-                            "display_name": item.get("name") or name,
-                            "country": item.get("country"),
-                            "admin": item.get("admin"),
-                            "lat": lat,
-                            "lon": lon,
-                            "distance_km": round(dist, 1),
-                            "is_approximate": False,
-                        }
-                        _geocode_cache[cache_key] = res
-                        return res, None
-                else:
-                    outside_dist = dist
-        except httpx.TimeoutException:
-            timed_out = True
-        except Exception as exc:
-            log.debug("Tier d Photon search error for '%s': %s", v, exc)
-
-    # Tier e: Optional last resort: ask existing Gemini model (llm_json) for approximate coordinates
+    # Tier e: Optional last resort: ask Gemini model (llm_json) for approximate coordinates
     skipped_for_quota = False
     try:
         from server.ai.gateway import PRIORITY_SKIPPABLE, gateway
@@ -1093,6 +1220,8 @@ async def _resolve_stops_background(
     candidates: list[str],
     cache_key: str,
     trip_id: Optional[int],
+    cached_coordinates: Optional[dict[str, dict]] = None,
+    itinerary_id: Optional[int] = None,
 ) -> None:
     """Background worker: progressively resolves candidate places, fetches weather, updates cache, and publishes event."""
     try:
@@ -1102,6 +1231,7 @@ async def _resolve_stops_background(
 
         resolved_locations = [dest_loc]
         unlocated_stops = []
+        newly_resolved_coords: dict[str, dict] = {}
 
         # Validate candidates through LLM safety net
         validated_candidates = await validate_candidate_places_with_llm(destination, candidates)
@@ -1110,6 +1240,7 @@ async def _resolve_stops_background(
             if candidate.lower() == destination.lower() or candidate.lower() == dest_name.lower():
                 continue
 
+            await asyncio.sleep(0.25)  # Space requests politely to prevent cloud IP throttling
             cand_geo, miss_reason = await _geocode_candidate_within_radius(
                 name=candidate,
                 dest_lat=dest_lat,
@@ -1117,6 +1248,7 @@ async def _resolve_stops_background(
                 dest_city=dest_name,
                 dest_country=dest_country,
                 max_dist_km=150.0,
+                cached_coords=cached_coordinates,
             )
 
             if not cand_geo:
@@ -1126,6 +1258,11 @@ async def _resolve_stops_background(
                     entry["unlocated_stops"] = list(unlocated_stops)
                     entry["pending_count"] = max(0, len(validated_candidates) - (len(resolved_locations) - 1) - len(unlocated_stops))
                 continue
+
+            # Record in newly resolved dict to persist to itinerary.days
+            newly_resolved_coords[candidate.lower().strip()] = cand_geo
+            if cand_geo.get("name"):
+                newly_resolved_coords[cand_geo["name"].lower().strip()] = cand_geo
 
             # Only deduplicate against non-destination stops if within 50m
             is_dup = any(
@@ -1160,6 +1297,10 @@ async def _resolve_stops_background(
 
             if len(resolved_locations) >= 16:
                 break
+
+        # Persist newly resolved coordinates into itinerary.days in database so subsequent requests make 0 external calls
+        if itinerary_id and newly_resolved_coords:
+            _persist_itinerary_coordinates(itinerary_id, newly_resolved_coords)
 
         # Concurrently fetch weather for all resolved stops
         stop_locs = [loc for loc in resolved_locations if not loc.get("is_destination")]
@@ -1210,6 +1351,8 @@ async def overview(
     itinerary_version: Optional[int] = None,
     trip_id: Optional[int] = None,
     raw_plan: Optional[str] = None,
+    cached_coordinates: Optional[dict[str, dict]] = None,
+    itinerary_id: Optional[int] = None,
 ) -> dict[str, Any]:
     # Content hash ensures regenerated itineraries invalidate cached overview immediately
     itinerary_hash = hashlib.md5(json.dumps(itinerary_days or [], sort_keys=True).encode()).hexdigest()[:8]
@@ -1286,7 +1429,7 @@ async def overview(
         raw_plan=raw_plan,
     )
     
-    # Check if all candidate stops are already cached
+    # Check if all candidate stops are already cached (in itinerary.days or in-memory cache)
     resolved_locations = [dest_loc]
     unlocated_stops = []
     uncached_candidates = []
@@ -1295,7 +1438,35 @@ async def overview(
         if candidate.lower() == destination.lower() or candidate.lower() == dest_name.lower():
             continue
         c_key = f"{candidate.lower().strip()}|{dest_name.lower().strip()}|{dest_lat:.2f},{dest_lon:.2f}"
-        if c_key in _geocode_cache and _geocode_cache[c_key]:
+
+        # 1. Check persistent itinerary.days cached_coordinates first (0 network calls)
+        cand_geo = None
+        cand_norm = candidate.lower().strip()
+        if cached_coordinates and cand_norm in cached_coordinates:
+            cand_geo = cached_coordinates[cand_norm]
+        elif cached_coordinates:
+            for v in _generate_name_variants(candidate):
+                v_norm = v.lower().strip()
+                if v_norm in cached_coordinates:
+                    cand_geo = cached_coordinates[v_norm]
+                    break
+
+        if cand_geo and isinstance(cand_geo, dict) and "lat" in cand_geo and "lon" in cand_geo:
+            _geocode_cache[c_key] = cand_geo
+            resolved_locations.append({
+                "name": cand_geo.get("name") or candidate,
+                "label": cand_geo.get("display_name") or cand_geo.get("label") or candidate,
+                "country": cand_geo.get("country"),
+                "admin": cand_geo.get("admin"),
+                "lat": cand_geo["lat"],
+                "lon": cand_geo["lon"],
+                "distance_km": cand_geo.get("distance_km", 0.0),
+                "is_destination": False,
+                "is_region": False,
+                "is_approximate": cand_geo.get("is_approximate", False),
+                "weather": None,
+            })
+        elif c_key in _geocode_cache and _geocode_cache[c_key]:
             cand_geo = _geocode_cache[c_key]
             resolved_locations.append({
                 "name": cand_geo["name"],
@@ -1318,7 +1489,7 @@ async def overview(
             uncached_candidates.append(candidate)
 
     if not uncached_candidates:
-        # All candidates already resolved and cached! Fetch weather for stops and return immediately
+        # All candidates already resolved and cached! Fetch weather for stops and return immediately (0 external geocoding calls)
         stop_locs = [loc for loc in resolved_locations if not loc.get("is_destination")]
         if stop_locs:
             weather_tasks = [_fetch_weather(loc["lat"], loc["lon"], start, end) for loc in stop_locs]
@@ -1352,7 +1523,11 @@ async def overview(
                 candidates=candidates,
                 cache_key=key,
                 trip_id=trip_id,
+                cached_coordinates=cached_coordinates,
+                itinerary_id=itinerary_id,
             )
         )
+
+    return out
 
     return out

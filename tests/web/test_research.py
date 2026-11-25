@@ -1,4 +1,5 @@
 import pytest
+import time
 from datetime import date
 from unittest.mock import AsyncMock
 import httpx
@@ -534,5 +535,127 @@ async def test_overview_progressive_loading_initial_response(monkeypatch):
     assert out["is_resolving"] is True
     assert out["pending_count"] > 0
     assert "Locating" in out["status_message"]
+
+
+@pytest.mark.asyncio
+async def test_cloud_geocoding_fallback_when_nominatim_blocked_and_caching(monkeypatch):
+    """Verifies that when Nominatim returns HTTP 429 or 403 (cloud IP block on Render),
+    fallback geocoders (Photon & Open-Meteo) resolve all stops and cache them in itinerary.days.
+    """
+    research.invalidate_cache()
+    # Reset circuit breaker
+    research._nominatim_blocked_until = 0.0
+
+    nominatim_calls = []
+    photon_calls = []
+
+    async def mock_get(url, params=None, headers=None):
+        if "nominatim.openstreetmap.org" in url:
+            nominatim_calls.append(url)
+            # Simulate Cloud IP Block: HTTP 429 Too Many Requests
+            resp = httpx.Response(429, request=httpx.Request("GET", url))
+            raise httpx.HTTPStatusError("429 Too Many Requests", request=resp.request, response=resp)
+        elif "open-meteo.com/v1/forecast" in url:
+            return {"current": {"temperature_2m": 26, "weather_code": 1}, "daily": {"time": []}}
+        return {}
+
+    async def mock_query_photon(query, lat, lon):
+        photon_calls.append(query)
+        # Mock Photon returning coordinates near Ahmedabad (23.0225, 72.5714)
+        if "sabarmati" in query.lower():
+            return [{
+                "name": "Sabarmati Ashram",
+                "country": "India",
+                "admin": "Gujarat",
+                "lat": 23.0605,
+                "lon": 72.5804,
+                "type": "landmark",
+                "display_name": "Sabarmati Ashram, Ahmedabad",
+            }]
+        elif "kankaria" in query.lower():
+            return [{
+                "name": "Kankaria Lake",
+                "country": "India",
+                "admin": "Gujarat",
+                "lat": 23.0064,
+                "lon": 72.6026,
+                "type": "landmark",
+                "display_name": "Kankaria Lake, Ahmedabad",
+            }]
+        return []
+
+    async def mock_geocode_place(name):
+        return {"name": "Ahmedabad", "country": "India", "lat": 23.0225, "lon": 72.5714, "type": "city"}
+
+    monkeypatch.setattr(research, "_get", mock_get)
+    monkeypatch.setattr(research, "_query_photon", mock_query_photon)
+    monkeypatch.setattr(research, "geocode_place", mock_geocode_place)
+    monkeypatch.setattr(research, "_throttle_nominatim", AsyncMock(return_value=True))
+
+    dest_lat, dest_lon = 23.0225, 72.5714
+
+    # 1. Direct call to _geocode_candidate_within_radius when Nominatim is 429 blocked
+    geo, reason = await research._geocode_candidate_within_radius(
+        name="Sabarmati Ashram",
+        dest_lat=dest_lat,
+        dest_lon=dest_lon,
+        dest_city="Ahmedabad",
+        dest_country="India",
+        max_dist_km=150.0,
+    )
+    assert geo is not None, f"Expected fallback resolution, got reason: {reason}"
+    assert geo["name"] == "Sabarmati Ashram"
+    assert round(geo["lat"], 2) == 23.06
+    assert len(nominatim_calls) > 0  # Nominatim was attempted
+    assert len(photon_calls) > 0     # Photon fallback succeeded
+    assert research._nominatim_blocked_until > time.time()  # Circuit breaker opened
+
+    # 2. Verify cached_coords in itinerary.days avoids any external calls (0 network requests)
+    cached = {
+        "kankaria lake": {
+            "name": "Kankaria Lake",
+            "display_name": "Kankaria Lake, Ahmedabad",
+            "lat": 23.0064,
+            "lon": 72.6026,
+            "distance_km": 3.5,
+            "country": "India",
+            "admin": "Gujarat",
+        }
+    }
+    photon_calls_before = len(photon_calls)
+    nominatim_calls_before = len(nominatim_calls)
+
+    cached_geo, _ = await research._geocode_candidate_within_radius(
+        name="Kankaria Lake",
+        dest_lat=dest_lat,
+        dest_lon=dest_lon,
+        dest_city="Ahmedabad",
+        dest_country="India",
+        max_dist_km=150.0,
+        cached_coords=cached,
+    )
+    assert cached_geo is not None
+    assert cached_geo["name"] == "Kankaria Lake"
+    # Zero external geocoding calls made because it was resolved from cached_coords
+    assert len(photon_calls) == photon_calls_before
+    assert len(nominatim_calls) == nominatim_calls_before
+
+    # 3. Test overview() with full cached_coordinates resolves immediately with is_resolving=False
+    days = [{
+        "day": 1,
+        "title": "Day 1",
+        "sections": [{"period": "morning", "content": "* **Kankaria Lake:** Lake walk."}],
+        "places": ["Kankaria Lake"]
+    }]
+    out = await research.overview(
+        "Ahmedabad",
+        date(2026, 11, 28),
+        date(2026, 11, 30),
+        itinerary_days=days,
+        cached_coordinates=cached,
+    )
+    assert out["is_resolving"] is False
+    assert any(loc["name"] == "Kankaria Lake" for loc in out["locations"])
+
 
 
