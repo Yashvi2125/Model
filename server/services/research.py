@@ -223,69 +223,133 @@ def extract_locations_from_itinerary(days_data: list[dict], max_candidates: int 
     if structured_candidates:
         return structured_candidates[:max_candidates]
 
-    # 2. Fallback Extractor (for itineraries without structured places):
+    # 2. Comprehensive Fallback Extractor (for itineraries without structured places, supporting both bold markdown and plain-text activity descriptions worldwide):
     raw_candidates: list[str] = []
     bold_pattern = re.compile(r"\*\*([A-Za-z0-9\s'’\-–—.,/&:]+?)\*\*", re.DOTALL)
+
+    _place_suffixes = (
+        "Museum|Palace|Castle|Temple|Shrine|Church|Cathedral|Basilica|Mosque|Tower|Bridge|"
+        "Park|Garden|Gardens|Beach|Bay|Lake|Falls|River|Canal|Market|Bazaar|Souk|Square|Plaza|"
+        "Piazza|Station|Fort|Fortress|Monument|Memorial|Center|Centre|Gallery|Theater|Theatre|"
+        "Stadium|Arena|Aquarium|Zoo|Sanctuary|Harbor|Harbour|Pier|Quay|Promenade|District|Quarter|"
+        "Hill|Mountain|Peak|Canyon|Gorge|Valley|Island|Point|Viewpoint|Overlook|Observatory|SkyPark|"
+        "Crossing|Ashram|Mahal|Mandir|Ghat|Pagoda|Wat|Gate|Arch|Steps|Colosseum|Forum|Acropolis|"
+        "Pyramids|Ruins|Cemetery|Street|Avenue|Boulevard|Stepwell|House"
+    )
+    _standalone_landmarks_re = re.compile(
+        r"\b(Colosseum|Roman Forum|Pantheon|Parthenon|Acropolis|Sagrada Familia|Alhambra|Petra|Machu Picchu|Taj Mahal|Angkor Wat|Stonehenge|Big Ben|London Eye|Burj Khalifa|Chichen Itza|Christ the Redeemer|Louvre|Eiffel Tower|Trevi Fountain|Sydney Opera House)\b",
+        re.IGNORECASE,
+    )
+    _suffix_place_re = re.compile(
+        rf"\b([A-Z0-9][a-zA-Z0-9'’\-]*(?:\s+(?:of|de|del|du|la|le|des|da|di|the|[A-Z0-9][a-zA-Z0-9'’\-]*)){{0,4}}\s+(?:{_place_suffixes}))\b"
+    )
+    _action_place_re = re.compile(
+        r"\b(?:visit|explore|tour|head to|walk(?: to| around| through)?|stroll(?: through| around)?|wander(?: through| around)?|stop by|check out|discover|relax at|dinner at|lunch at|breakfast at|brunch at|drinks at|meal at|morning at|afternoon at|evening at|sunset at|hike up|ascend|climb|admire|see)\s+(?:the\s+|a\s+|an\s+)?([A-Z0-9][a-zA-Z0-9'’\-]+(?:\s+(?:of|de|del|du|la|le|des|da|di|the|[A-Z0-9][a-zA-Z0-9'’\-]+)){0,3})",
+        re.IGNORECASE,
+    )
+    _bullet_place_re = re.compile(
+        r"(?:^|\n)\s*[-*+•]\s*(?:(?:Morning|Afternoon|Evening|Night)\s*[:\-–—]\s*)?([A-Za-z0-9\s'’\-–—/&]+?)(?:\s*[:\-–—]|\s*\(|\s*\n|\Z)"
+    )
+    _prefix_strip_re = re.compile(
+        r"^(?:Visit|Explore|Tour|Head to|Walk(?: to| around| through)?|Stroll(?: through| around)?|Wander(?: through| around)?|Stop by|Check out|Discover|Relax at|Dinner at|Lunch at|Breakfast at|Brunch at|Drinks at|Meal at|Morning at|Afternoon at|Evening at|Night at|Sunset at|See|Climb|Ascend|Admire|Spend your \w+ at)\s+(?:the\s+|a\s+|an\s+)?",
+        re.IGNORECASE,
+    )
+    _days_months_re = re.compile(
+        r"\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|January|February|March|April|May|June|July|August|September|October|November|December|Day\s*\d+)\b",
+        re.IGNORECASE,
+    )
+
+    dest_clean = (destination or "").split(",")[0].strip().lower()
+
+    def _clean_and_add(raw_item: str) -> None:
+        if not raw_item:
+            return
+        parts = re.split(r"\s+(?:and|&)\s+", raw_item)
+        for part in parts:
+            clean = _prefix_strip_re.sub("", part.strip(" :.-–—*'\"(),")).strip()
+            clean = re.sub(r"^(?:the|a|an)\s+", "", clean, flags=re.I).strip()
+            clean = re.sub(r"\s*\([^)]*\)", "", clean).strip()
+            clean = re.split(r"\s*[:\-–—]\s*", clean)[0].strip()
+
+            if not clean or len(clean) <= 2 or len(clean) > 45:
+                continue
+            words = clean.split()
+            if len(words) > 6:
+                continue
+            if not clean[0].isupper() and not clean[0].isdigit():
+                continue
+            low = clean.lower()
+            if dest_clean and (low == dest_clean or (destination and low == destination.lower())):
+                continue
+            if low in STANDALONE_CATEGORIES:
+                continue
+            if any(c in clean for c in ["₹", "$", "€", "£", "%"]):
+                continue
+            if _days_months_re.search(clean):
+                continue
+            if DETERMINERS_START.search(clean):
+                continue
+            if CLAUSE_VERBS.search(clean):
+                continue
+            if low.startswith(("note", "estimate", "approx", "entry", "activity", "activities", "budget", "flight", "check-in", "checkout", "transfer")):
+                continue
+            raw_candidates.append(clean)
 
     for day in days_data or []:
         # Intentionally SKIP day.get("title") — day headings are thematic, never place names!
         contents = [s.get("content", "") for s in (day.get("sections", []) or [])]
+        for act in day.get("activities", []) or []:
+            if isinstance(act, str):
+                contents.append(act)
+            elif isinstance(act, dict):
+                for k in ("description", "text", "summary"):
+                    if act.get(k):
+                        contents.append(act[k])
         if day.get("intro"):
             contents.append(day.get("intro"))
+
         for content in contents:
+            if not content:
+                continue
+            # 1. Bold text
             for m in bold_pattern.finditer(content):
-                b_raw = m.group(1).strip().strip(" :.-–—*")
-                # Strip meal/activity prefixes
-                clean = re.sub(
-                    r"^(?:Lunch|Dinner|Breakfast|Brunch|Snacks|Drinks|Meal|Spend your \w+ at|Visit|Explore|Tour)\s+(?:at\s+|the\s+)?",
-                    "",
-                    b_raw,
-                    flags=re.I
-                ).strip(" :.-–—*")
-
-                low = clean.lower()
-                words = clean.split()
-
-                # Linguistic & structural rejection checks:
-                if len(clean) <= 2 or len(clean) > 45 or len(words) > 6:
-                    continue
-                if DETERMINERS_START.search(clean):
-                    continue
-                if CLAUSE_VERBS.search(clean):
-                    continue
-                if low in STANDALONE_CATEGORIES:
-                    continue
-                if any(c in clean for c in ["₹", "$", "€", "£", "%"]):
-                    continue
-                if low.startswith(("note", "estimate", "approx", "entry", "activity", "activities", "budget")):
-                    continue
-
-                raw_candidates.append(clean)
+                _clean_and_add(m.group(1))
+            # 2. Bullet starts
+            for m in _bullet_place_re.finditer(content):
+                _clean_and_add(m.group(1))
+            # 3. Capitalized proper nouns with place suffixes
+            for m in _suffix_place_re.finditer(content):
+                _clean_and_add(m.group(1))
+            # 4. Standalone world landmarks
+            for m in _standalone_landmarks_re.finditer(content):
+                _clean_and_add(m.group(1))
+            # 5. Action triggers (visit/explore/etc.)
+            for m in _action_place_re.finditer(content):
+                words = m.group(1).split()
+                valid_words = []
+                for w in words:
+                    if w[0].isupper() or w.lower() in ("of", "de", "del", "du", "la", "le", "des", "da", "di"):
+                        valid_words.append(w)
+                    else:
+                        break
+                if valid_words:
+                    _clean_and_add(" ".join(valid_words))
 
     # 3. Fallback to raw_plan markdown if structured days yielded no places
     if not raw_candidates and raw_plan:
         for m in bold_pattern.finditer(raw_plan):
-            b_raw = m.group(1).strip().strip(" :.-–—*")
-            clean = re.sub(
-                r"^(?:Lunch|Dinner|Breakfast|Brunch|Snacks|Drinks|Meal|Spend your \w+ at|Visit|Explore|Tour)\s+(?:at\s+|the\s+)?",
-                "",
-                b_raw,
-                flags=re.I
-            ).strip(" :.-–—*")
-
-            low = clean.lower()
-            words = clean.split()
-
-            if len(clean) <= 2 or len(clean) > 45 or len(words) > 6:
-                continue
-            if DETERMINERS_START.search(clean) or CLAUSE_VERBS.search(clean):
-                continue
-            if low in STANDALONE_CATEGORIES or any(c in clean for c in ["₹", "$", "€", "£", "%"]):
-                continue
-            if low.startswith(("note", "estimate", "approx", "entry", "activity", "activities", "budget")):
-                continue
-
-            raw_candidates.append(clean)
+            _clean_and_add(m.group(1))
+        for m in _bullet_place_re.finditer(raw_plan):
+            _clean_and_add(m.group(1))
+        for m in _suffix_place_re.finditer(raw_plan):
+            _clean_and_add(m.group(1))
+        for m in _standalone_landmarks_re.finditer(raw_plan):
+            _clean_and_add(m.group(1))
+        for m in _action_place_re.finditer(raw_plan):
+            words = m.group(1).split()
+            valid_words = [w for w in words if w[0].isupper() or w.lower() in ("of", "de", "del", "du", "la", "le", "des", "da", "di")]
+            if valid_words:
+                _clean_and_add(" ".join(valid_words))
 
     # Deduplicate while preserving order
     seen = set()
@@ -297,7 +361,16 @@ def extract_locations_from_itinerary(days_data: list[dict], max_candidates: int 
             seen.add(low)
             unique.append(clean)
 
-    return unique[:max_candidates]
+    # Filter redundant single-word substrings when a compound name is present (e.g. "Louvre" vs "Louvre Museum")
+    filtered: list[str] = []
+    for item in unique:
+        low_item = item.lower()
+        if any(low_item != other.lower() and low_item in other.lower().split() for other in unique):
+            continue
+        filtered.append(item)
+
+    limit = min(max_candidates, 15) if max_candidates else 15
+    return filtered[:limit] if filtered else unique[:limit]
 
 
 async def validate_candidate_places_with_llm(destination: str, candidates: list[str]) -> list[str]:
@@ -603,6 +676,7 @@ def _persist_itinerary_coordinates(itinerary_id: int, new_coords: dict[str, dict
     try:
         from server.db import SessionLocal
         from server.models import Itinerary
+        from sqlalchemy.orm.attributes import flag_modified
         with SessionLocal() as session:
             it = session.get(Itinerary, itinerary_id)
             if it:
@@ -617,6 +691,7 @@ def _persist_itinerary_coordinates(itinerary_id: int, new_coords: dict[str, dict
                 if updated:
                     days_dict["cached_coordinates"] = existing
                     it.days = days_dict
+                    flag_modified(it, "days")
                     session.commit()
                     log.info("Persisted %d cached coordinates to itinerary %d", len(existing), itinerary_id)
     except Exception as exc:
@@ -833,34 +908,37 @@ async def _geocode_candidate_within_radius(
                         log.debug("Tier c Nominatim variant search error for '%s': %s", q, exc)
 
     # Fallback Tier 1: Photon API with lat/lon bias near destination (free, unauthenticated, allows cloud IPs)
+    dest_clean = dest_city.split(",")[0].strip()
     for v in variants:
-        try:
-            await asyncio.sleep(0.25)  # polite spacing for cloud requests
-            photon_results = await _query_photon(v, dest_lat, dest_lon)
-            for item in photon_results:
-                lat, lon = item["lat"], item["lon"]
-                dist = haversine_km(dest_lat, dest_lon, lat, lon)
-                cand_name = item.get("name") or item.get("display_name") or ""
-                if dist <= max_dist_km:
-                    if _names_resemble(v, cand_name):
-                        res = {
-                            "name": name,
-                            "display_name": item.get("name") or name,
-                            "country": item.get("country"),
-                            "admin": item.get("admin"),
-                            "lat": lat,
-                            "lon": lon,
-                            "distance_km": round(dist, 1),
-                            "is_approximate": False,
-                        }
-                        _geocode_cache[cache_key] = res
-                        return res, None
-                else:
-                    outside_dist = dist
-        except httpx.TimeoutException:
-            timed_out = True
-        except Exception as exc:
-            log.debug("Tier d Photon search error for '%s': %s", v, exc)
+        queries_to_try = [f"{v}, {dest_clean}", v] if dest_clean.lower() not in v.lower() else [v]
+        for q_try in queries_to_try:
+            try:
+                await asyncio.sleep(0.25)  # polite spacing for cloud requests
+                photon_results = await _query_photon(q_try, dest_lat, dest_lon)
+                for item in photon_results:
+                    lat, lon = item["lat"], item["lon"]
+                    dist = haversine_km(dest_lat, dest_lon, lat, lon)
+                    cand_name = item.get("name") or item.get("display_name") or ""
+                    if dist <= max_dist_km:
+                        if _names_resemble(v, cand_name):
+                            res = {
+                                "name": name,
+                                "display_name": item.get("name") or name,
+                                "country": item.get("country"),
+                                "admin": item.get("admin"),
+                                "lat": lat,
+                                "lon": lon,
+                                "distance_km": round(dist, 1),
+                                "is_approximate": False,
+                            }
+                            _geocode_cache[cache_key] = res
+                            return res, None
+                    else:
+                        outside_dist = dist
+            except httpx.TimeoutException:
+                timed_out = True
+            except Exception as exc:
+                log.debug("Tier d Photon search error for '%s': %s", q_try, exc)
 
     # Fallback Tier 2: Open-Meteo Geocoding API (free, unauthenticated, allows cloud IPs)
     for v in variants[:3]:
@@ -884,6 +962,12 @@ async def _geocode_candidate_within_radius(
                     }
                     _geocode_cache[cache_key] = res
                     return res, None
+                else:
+                    outside_dist = dist
+        except httpx.TimeoutException:
+            timed_out = True
+        except Exception as exc:
+            log.debug("Tier e Open-Meteo search error for '%s': %s", v, exc)
         except Exception as exc:
             log.debug("Tier om Open-Meteo geocoding search error for '%s': %s", v, exc)
 

@@ -65,7 +65,9 @@ async def research(a: TripAccess = Depends(trip_access), db: Session = Depends(g
                     existing[k] = v
                     changed = True
             if changed:
+                from sqlalchemy.orm.attributes import flag_modified
                 days_dict["cached_coordinates"] = existing
                 it.days = days_dict
+                flag_modified(it, "days")
                 db.commit()
     return {**notes, **data}

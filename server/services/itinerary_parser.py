@@ -55,6 +55,49 @@ def extract_structured_places_from_content(content: str) -> list[dict[str, str]]
                 "kind": kind
             })
 
+    if not places:
+        # Pattern 2: Activity bullet beginning with non-bold place name: * Place Name: or - Place Name (entry...)
+        non_bold_lead = re.compile(
+            r"(?:^|\n)\s*[-*+•]\s*(?:(?:Morning|Afternoon|Evening|Night)\s*[:\-–—]\s*)?([A-Z0-9][A-Za-z0-9\s'’\-–—.,/&:]+?)(?:\s*[:\-–—]|\s*\(|\s*\n|\Z)(.*?)(?=(?:\n\s*[-*+•]|\Z))",
+            re.DOTALL
+        )
+        for m in non_bold_lead.finditer(content):
+            raw_name = m.group(1).strip().strip(" :.-–—*")
+            desc = (m.group(2) or "").strip()
+            clean_name = re.sub(r"^(?:Lunch|Dinner|Breakfast|Brunch|Snacks|Drinks|Meal)\s+at\s+", "", raw_name, flags=re.I).strip()
+            clean_name = re.sub(r"^(?:Visit|Explore|Tour)\s+(?:the\s+)?", "", clean_name, flags=re.I).strip()
+            clean_name = re.sub(r"^(?:the|a|an)\s+", "", clean_name, flags=re.I).strip()
+            clean_name = re.sub(r"\s*\([^)]*\)", "", clean_name).strip()
+            clean_name = re.split(r"\s*[:\-–—]\s*", clean_name)[0].strip()
+
+            low_clean = clean_name.lower()
+            if low_clean in ("morning", "afternoon", "evening", "night", "lunch", "dinner", "breakfast", "stay", "tips", "notes", "arrival", "departure"):
+                continue
+            if any(c in clean_name for c in ("₹", "$", "€", "£", "%")):
+                continue
+
+            low_raw = raw_name.lower()
+            low_desc = desc[:120].lower()
+            if any(w in low_raw or w in low_desc for w in ("lunch", "dinner", "breakfast", "cafe", "restaurant", "dining", "thali", "diner", "bistro", "bakery")):
+                kind = "restaurant"
+            elif any(w in low_raw or w in low_desc for w in ("market", "shopping", "bazaar", "bazar", "boutique", "emporium", "mall")):
+                kind = "market"
+            elif any(w in low_raw or w in low_desc for w in ("hotel", "resort", "hostel", "stay", "accommodation")):
+                kind = "hotel"
+            else:
+                kind = "attraction"
+
+            area_match = re.search(r"\bin\s+(?:the\s+)?([A-Z][a-zA-Z0-9\s]+?)(?:,|\.|\barea\b|\bdistrict\b|\bneighborhood\b)", desc)
+            area = area_match.group(1).strip() if area_match else None
+
+            if len(clean_name) > 2 and len(clean_name.split()) <= 6 and clean_name[0].isupper():
+                if not any(p["name"].lower() == clean_name.lower() for p in places):
+                    places.append({
+                        "name": clean_name,
+                        "area": area,
+                        "kind": kind
+                    })
+
     return places
 
 

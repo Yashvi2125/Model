@@ -658,4 +658,133 @@ async def test_cloud_geocoding_fallback_when_nominatim_blocked_and_caching(monke
     assert any(loc["name"] == "Kankaria Lake" for loc in out["locations"])
 
 
+@pytest.mark.asyncio
+async def test_destination_agnostic_plain_text_extraction_and_cloud_fallback(monkeypatch):
+    """Destination-agnostic test verifying that plain-text itineraries without bold markdown
+    dynamically extract proper noun venues worldwide, resolve via Photon/Open-Meteo cloud fallbacks
+    when Nominatim is blocked (HTTP 429), and persist coordinates in itinerary.days with flag_modified.
+    """
+    research.invalidate_cache()
+    research._nominatim_blocked_until = 0.0
+
+    # 1. Test Plain-text extraction across diverse destinations worldwide (no bold markdown)
+    paris_days = [
+        {
+            "day": 1,
+            "title": "Day 1: Heart of Paris",
+            "sections": [
+                {"period": "morning", "content": "Visit the Eiffel Tower and take photos."},
+                {"period": "afternoon", "content": "Head to Louvre Museum and stroll through Tuileries Garden."},
+            ],
+        }
+    ]
+    paris_stops = research.extract_locations_from_itinerary(paris_days, destination="Paris")
+    assert "Eiffel Tower" in paris_stops
+    assert "Louvre Museum" in paris_stops
+    assert "Tuileries Garden" in paris_stops
+    assert "Paris" not in [s.lower() for s in paris_stops]  # bare destination excluded
+
+    tokyo_days = [
+        {
+            "day": 1,
+            "title": "Day 1: Tokyo Exploration",
+            "sections": [
+                {"period": "morning", "content": "- Sensoji Temple: Explore the temple and browse Nakamise Shopping Street."},
+                {"period": "afternoon", "content": "* Shibuya Crossing - Pedestrian walk and visit Meiji Shrine."},
+            ],
+        }
+    ]
+    tokyo_stops = research.extract_locations_from_itinerary(tokyo_days, destination="Tokyo")
+    assert "Sensoji Temple" in tokyo_stops
+    assert "Nakamise Shopping Street" in tokyo_stops
+    assert "Shibuya Crossing" in tokyo_stops
+    assert "Meiji Shrine" in tokyo_stops
+
+    # 2. Simulate Nominatim returning 429 (Render cloud block) and verify Photon/Open-Meteo resolve stops
+    photon_queried = []
+
+    async def mock_get(url, params=None, headers=None):
+        if "nominatim.openstreetmap.org" in url:
+            resp = httpx.Response(429, request=httpx.Request("GET", url))
+            raise httpx.HTTPStatusError("429 Too Many Requests", request=resp.request, response=resp)
+        elif "open-meteo.com/v1/forecast" in url:
+            return {"current": {"temperature_2m": 22, "weather_code": 0}, "daily": {"time": []}}
+        return {}
+
+    async def mock_query_photon(query, lat, lon):
+        photon_queried.append(query)
+        q_low = query.lower()
+        if "eiffel" in q_low:
+            return [{
+                "name": "Eiffel Tower",
+                "country": "France",
+                "admin": "Île-de-France",
+                "lat": 48.8584,
+                "lon": 2.2945,
+                "type": "landmark",
+            }]
+        elif "louvre" in q_low:
+            return [{
+                "name": "Louvre Museum",
+                "country": "France",
+                "admin": "Île-de-France",
+                "lat": 48.8606,
+                "lon": 2.3376,
+                "type": "museum",
+            }]
+        return []
+
+    async def mock_geocode_place(name):
+        return {"name": "Paris", "country": "France", "lat": 48.8566, "lon": 2.3522, "type": "city"}
+
+    monkeypatch.setattr(research, "_get", mock_get)
+    monkeypatch.setattr(research, "_query_photon", mock_query_photon)
+    monkeypatch.setattr(research, "geocode_place", mock_geocode_place)
+    monkeypatch.setattr(research, "_throttle_nominatim", AsyncMock(return_value=True))
+
+    geo_eiffel, miss_reason = await research._geocode_candidate_within_radius(
+        name="Eiffel Tower",
+        dest_lat=48.8566,
+        dest_lon=2.3522,
+        dest_city="Paris",
+        dest_country="France",
+    )
+    assert geo_eiffel is not None
+    assert geo_eiffel["name"] == "Eiffel Tower"
+    assert round(geo_eiffel["lat"], 2) == 48.86
+    # Verified query was normalized with destination city
+    assert any("paris" in q.lower() for q in photon_queried)
+
+    # 3. Verify flag_modified persistence in itinerary.days JSON
+    fake_itinerary = type("FakeItinerary", (), {
+        "id": 999,
+        "days": {"days": paris_days},
+    })()
+    modified_flags = []
+
+    def mock_flag_modified(instance, attr):
+        modified_flags.append(attr)
+
+    class MockSession:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def get(self, model, ident):
+            return fake_itinerary
+        def commit(self):
+            pass
+
+    monkeypatch.setattr("sqlalchemy.orm.attributes.flag_modified", mock_flag_modified)
+    monkeypatch.setattr("server.db.SessionLocal", lambda: MockSession())
+
+    research._persist_itinerary_coordinates(999, {
+        "eiffel tower": geo_eiffel,
+    })
+
+    assert "days" in modified_flags
+    assert "eiffel tower" in fake_itinerary.days["cached_coordinates"]
+
+
+
 
