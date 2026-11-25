@@ -23,6 +23,7 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini").lower()
 LOCAL_LLM_BASE_URL = os.getenv("LOCAL_LLM_BASE_URL", "http://host.docker.internal:11434")
 LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "qwen2.5:3b-instruct")
 LOCAL_LLM_TIMEOUT = int(os.getenv("LOCAL_LLM_TIMEOUT", "60"))
+LOCAL_LLM_API_KEY = os.getenv("LOCAL_LLM_API_KEY", "")
 
 # Backwards compatibility alias
 MODEL = GEMINI_MODEL

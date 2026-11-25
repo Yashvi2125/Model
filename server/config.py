@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     local_llm_base_url: str = "http://host.docker.internal:11434"
     local_llm_model: str = "qwen2.5:3b-instruct"
     local_llm_timeout: int = 60
+    local_llm_api_key: str = ""  # optional API key for OpenAI-compatible Qwen endpoints (Groq, OpenRouter, etc.)
 
     @property
     def origins(self) -> list[str]:

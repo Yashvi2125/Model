@@ -453,6 +453,7 @@ async def test_swap_itinerary_day_qwen_success():
         m_settings.return_value.llm_provider = "qwen"
         m_settings.return_value.local_llm_model = "qwen2.5:1.5b-instruct"
         m_settings.return_value.local_llm_base_url = "http://localhost:11434"
+        m_settings.return_value.local_llm_api_key = ""
         m_settings.return_value.local_llm_timeout = 60
         with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as m_post:
             m_post.return_value = mock_resp
@@ -528,6 +529,7 @@ async def test_generate_packing_list_qwen_success():
         m_settings.return_value.llm_provider = "qwen"
         m_settings.return_value.local_llm_model = "qwen2.5:1.5b-instruct"
         m_settings.return_value.local_llm_base_url = "http://localhost:11434"
+        m_settings.return_value.local_llm_api_key = ""
         m_settings.return_value.local_llm_timeout = 60
         with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as m_post:
             m_post.return_value = mock_resp
@@ -591,6 +593,7 @@ async def test_summarize_chat_messages_qwen_success():
         m_settings.return_value.llm_provider = "qwen"
         m_settings.return_value.local_llm_model = "qwen2.5:1.5b-instruct"
         m_settings.return_value.local_llm_base_url = "http://localhost:11434"
+        m_settings.return_value.local_llm_api_key = ""
         m_settings.return_value.local_llm_timeout = 60
         with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as m_post:
             m_post.return_value = mock_resp
@@ -627,5 +630,116 @@ async def test_summarize_chat_messages_offline_gemini_fallback():
                 bullets, provider = await summarize_chat_messages("Chat log...")
                 assert provider == "gemini"
                 m_gem.assert_called_once()
+
+
+# ── Tests for LOCAL_LLM_API_KEY (OpenAI-compatible /v1/chat/completions) ──────
+
+@pytest.mark.asyncio
+async def test_openai_compatible_mode_with_api_key_for_preference_extraction():
+    fake_openai_resp = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps({
+                        "destination": "Goa",
+                        "trip_days": 4,
+                        "budget_per_person": 15000,
+                        "interests": ["beaches", "seafood"],
+                        "confidence": 0.9,
+                    })
+                }
+            }
+        ]
+    }
+    mock_resp = httpx.Response(
+        status_code=200,
+        json=fake_openai_resp,
+        request=httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions"),
+    )
+
+    with patch("server.ai.local_llm.get_settings") as m_settings:
+        m_settings.return_value.llm_provider = "qwen"
+        m_settings.return_value.local_llm_model = "qwen-2.5-32b"
+        m_settings.return_value.local_llm_base_url = "https://api.groq.com/openai/v1"
+        m_settings.return_value.local_llm_api_key = "gsk_test_token"
+        m_settings.return_value.local_llm_timeout = 30
+
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as m_post:
+            m_post.return_value = mock_resp
+            ex = await extract_preferences_ollama("Let's go to Goa for 4 days budget 15k each", "Rohan")
+
+            assert ex.destination == "Goa"
+            assert ex.trip_days == 4
+            assert ex.budget_per_person == 15000
+            assert "beaches" in ex.interests
+            assert ex.provider == "qwen"
+
+            # Verify OpenAI-compatible URL, headers, and body
+            m_post.assert_called_once()
+            called_url = m_post.call_args[0][0]
+            called_headers = m_post.call_args[1].get("headers", {})
+            called_json = m_post.call_args[1].get("json", {})
+
+            assert called_url == "https://api.groq.com/openai/v1/chat/completions"
+            assert called_headers.get("Authorization") == "Bearer gsk_test_token"
+            assert called_json.get("response_format") == {"type": "json_object"}
+            assert called_json.get("max_tokens") == 256
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_mode_with_api_key_for_intent_classification():
+    fake_openai_resp = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps({"intent": "casual_chat"})
+                }
+            }
+        ]
+    }
+    mock_resp = httpx.Response(
+        status_code=200,
+        json=fake_openai_resp,
+        request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions"),
+    )
+
+    with patch("server.ai.local_llm.get_settings") as m_settings:
+        m_settings.return_value.local_llm_base_url = "https://openrouter.ai/api/v1"
+        m_settings.return_value.local_llm_api_key = "sk_openrouter_token"
+
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as m_post:
+            m_post.return_value = mock_resp
+            intent, latency = await classify_message_intent("good morning everyone")
+
+            assert intent == "casual_chat"
+            m_post.assert_called_once()
+            called_url = m_post.call_args[0][0]
+            called_headers = m_post.call_args[1].get("headers", {})
+            assert called_url == "https://openrouter.ai/api/v1/chat/completions"
+            assert called_headers.get("Authorization") == "Bearer sk_openrouter_token"
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_mode_fallback_to_gemini_on_error():
+    with patch("server.ai.local_llm.get_settings") as m_settings:
+        m_settings.return_value.llm_provider = "qwen"
+        m_settings.return_value.local_llm_model = "qwen2.5:3b-instruct"
+        m_settings.return_value.local_llm_base_url = "https://api.groq.com/openai/v1"
+        m_settings.return_value.local_llm_api_key = "invalid_token"
+
+        # Simulate 401 unauthorized from remote endpoint
+        mock_req = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+        mock_resp = httpx.Response(status_code=401, request=mock_req)
+
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as m_post:
+            m_post.return_value = mock_resp
+            with patch("server.ai.agents.extract_preferences_gemini", new_callable=AsyncMock) as m_gem:
+                m_gem.return_value = ExtractedPreferences(destination="Goa", confidence=0.8, provider="gemini")
+                result = await extract_preferences_with_fallback("Goa next week", "Asha")
+
+                assert result.destination == "Goa"
+                assert result.provider == "gemini"
+                m_gem.assert_called_once()
+
 
 

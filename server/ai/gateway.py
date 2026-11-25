@@ -183,6 +183,17 @@ class AIGateway:
     def is_enabled(self) -> bool:
         return self.enabled
 
+    def reset(self):
+        """Reset in-memory buckets, cooldowns, and timestamps (useful for tests)."""
+        self.total_requests = 0
+        self.requests_by_feature.clear()
+        self.requests_by_model.clear()
+        self.requests_by_status.clear()
+        self.cooldowns.clear()
+        self._sliding_window_timestamps.clear()
+        self._buckets.clear()
+        self._queue.clear()
+
     def _get_bucket(self, model: str) -> TokenBucket:
         if model not in self._buckets:
             refill_rate = self.rpm_limit / 60.0

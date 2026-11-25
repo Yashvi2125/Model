@@ -63,13 +63,85 @@ LOCAL_INTENT_SCHEMA = {
 }
 
 
+async def _call_local_or_remote_chat(
+    client: httpx.AsyncClient,
+    base_url: str,
+    api_key: Any,
+    model_name: str,
+    messages: list[dict],
+    schema: dict,
+    num_predict: int = 256,
+) -> str:
+    """Dispatches chat completion to Ollama (/api/chat) or OpenAI-compatible endpoint (/v1/chat/completions).
+
+    - When api_key is empty: calls standard Ollama /api/chat with 'format' JSON schema and 'options.num_predict'.
+    - When api_key is present: calls /v1/chat/completions with Bearer authorization and response_format={"type": "json_object"}.
+    Returns the string message content.
+    """
+    key_str = str(api_key).strip() if isinstance(api_key, str) else ""
+    b = base_url.rstrip("/")
+    if key_str:
+        if b.endswith("/v1"):
+            url = f"{b}/chat/completions"
+        elif "/v1/" in b:
+            url = b
+        else:
+            url = f"{b}/v1/chat/completions"
+
+        headers = {
+            "Authorization": f"Bearer {key_str}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model_name,
+            "messages": messages,
+            "temperature": 0.0,
+            "max_tokens": num_predict,
+            "response_format": {"type": "json_object"},
+        }
+        resp = await client.post(url, json=payload, headers=headers)
+        if hasattr(resp, "raise_for_status"):
+            res = resp.raise_for_status()
+            if asyncio.iscoroutine(res):
+                await res
+        data = resp.json()
+        if asyncio.iscoroutine(data):
+            data = await data
+        choices = data.get("choices", [])
+        if choices:
+            return choices[0].get("message", {}).get("content", "{}")
+        return "{}"
+    else:
+        url = f"{b}/api/chat"
+        payload = {
+            "model": model_name,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "temperature": 0.0,
+                "num_predict": num_predict,
+            },
+            "format": schema,
+        }
+        resp = await client.post(url, json=payload)
+        if hasattr(resp, "raise_for_status"):
+            res = resp.raise_for_status()
+            if asyncio.iscoroutine(res):
+                await res
+        data = resp.json()
+        if asyncio.iscoroutine(data):
+            data = await data
+        return data.get("message", {}).get("content", "{}")
+
+
 async def classify_message_intent(
     text: str,
     model: Optional[str] = None,
     base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
     timeout: float = 15.0,
 ) -> tuple[str, int]:
-    """Lightweight intent classification using local Ollama (qwen2.5:1.5b-instruct).
+    """Lightweight intent classification using local Ollama or remote OpenAI-compatible Qwen.
 
     Returns (intent_string, latency_ms).
     Fails open cleanly returning ("uncertain", latency_ms) on:
@@ -81,6 +153,7 @@ async def classify_message_intent(
     settings = get_settings()
     model_name = model or "qwen2.5:1.5b-instruct"
     ollama_url = base_url or settings.local_llm_base_url
+    key = api_key if api_key is not None else getattr(settings, "local_llm_api_key", "")
 
     # Check semaphore non-blocking: if locked, fail open immediately
     if _local_semaphore.locked():
@@ -95,28 +168,23 @@ async def classify_message_intent(
 
     t0 = time.time()
     try:
-        payload = {
-            "model": model_name,
-            "messages": [
-                {"role": "system", "content": LOCAL_INTENT_SYSTEM},
-                {"role": "user", "content": f"Message: \"\"\"{text}\"\"\""},
-            ],
-            "stream": False,
-            "options": {
-                "temperature": 0.0,
-                "num_predict": 48,
-            },
-            "format": LOCAL_INTENT_SCHEMA,
-        }
+        messages = [
+            {"role": "system", "content": LOCAL_INTENT_SYSTEM},
+            {"role": "user", "content": f"Message: \"\"\"{text}\"\"\""},
+        ]
 
-        api_endpoint = f"{ollama_url.rstrip('/')}/api/chat"
         async with httpx.AsyncClient(timeout=float(timeout)) as client:
-            resp = await client.post(api_endpoint, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+            raw_content = await _call_local_or_remote_chat(
+                client=client,
+                base_url=ollama_url,
+                api_key=key,
+                model_name=model_name,
+                messages=messages,
+                schema=LOCAL_INTENT_SCHEMA,
+                num_predict=48,
+            )
 
         latency_ms = int((time.time() - t0) * 1000)
-        raw_content = data.get("message", {}).get("content", "{}")
         parsed = json.loads(raw_content)
         intent = parsed.get("intent", "").strip().lower()
 
@@ -294,15 +362,17 @@ async def extract_preferences_ollama(
     trip_ctx: str = "",
     model: Optional[str] = None,
     base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
     timeout: Optional[int] = None,
 ) -> Any:
-    """Extract trip preferences using local Ollama (Qwen 2.5).
+    """Extract trip preferences using local Ollama or OpenAI-compatible Qwen.
 
     Raises LocalLLMBusyError immediately if another local inference is in progress.
     """
     settings = get_settings()
     model_name = model or settings.local_llm_model
     ollama_url = base_url or settings.local_llm_base_url
+    key = api_key if api_key is not None else getattr(settings, "local_llm_api_key", "")
     timeout_sec = timeout or settings.local_llm_timeout
 
     # Non-blocking semaphore check: do not queue or block if already locked
@@ -316,29 +386,24 @@ async def extract_preferences_ollama(
 
     try:
         user_prompt = f"Traveller: {traveller}\nMessage: \"\"\"{text}\"\"\""
-        payload = {
-            "model": model_name,
-            "messages": [
-                {"role": "system", "content": LOCAL_PREF_SYSTEM},
-                {"role": "user", "content": user_prompt},
-            ],
-            "stream": False,
-            "options": {
-                "temperature": 0.0,
-                "num_predict": 256,
-            },
-            "format": LOCAL_PREF_SCHEMA,
-        }
+        messages = [
+            {"role": "system", "content": LOCAL_PREF_SYSTEM},
+            {"role": "user", "content": user_prompt},
+        ]
 
-        api_endpoint = f"{ollama_url.rstrip('/')}/api/chat"
         t0 = time.time()
         async with httpx.AsyncClient(timeout=float(timeout_sec)) as client:
-            resp = await client.post(api_endpoint, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+            raw_content = await _call_local_or_remote_chat(
+                client=client,
+                base_url=ollama_url,
+                api_key=key,
+                model_name=model_name,
+                messages=messages,
+                schema=LOCAL_PREF_SCHEMA,
+                num_predict=256,
+            )
 
         latency_ms = int((time.time() - t0) * 1000)
-        raw_content = data.get("message", {}).get("content", "{}")
         parsed_json = json.loads(raw_content)
         normalized = normalize_extracted_json(parsed_json)
 
@@ -365,12 +430,13 @@ async def extract_preferences_with_fallback(
     provider: Optional[str] = None,
     model: Optional[str] = None,
     base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
     timeout: Optional[int] = None,
 ) -> Any:
     """Unified entry point for preference extraction.
 
     Checks config / parameter for provider ("gemini" vs "qwen").
-    If "qwen", tries local Ollama with non-blocking concurrency semaphore (limit 1)
+    If "qwen", tries local Ollama or OpenAI-compatible Qwen with non-blocking concurrency semaphore (limit 1)
     and falls back instantly to Gemini on:
     - Semaphore busy
     - Connection refused / network error
@@ -392,6 +458,7 @@ async def extract_preferences_with_fallback(
             trip_ctx=trip_ctx,
             model=model_name,
             base_url=base_url,
+            api_key=api_key,
             timeout=timeout,
         )
     except LocalLLMBusyError as exc:
@@ -461,11 +528,12 @@ async def swap_itinerary_day(
     trip_ctx: str = "",
     model: Optional[str] = None,
     base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
     timeout: Optional[int] = None,
 ) -> tuple[dict, str]:
     """Swap or customize a single-day itinerary slice.
 
-    Tries local Ollama with non-blocking semaphore (1) and falls back immediately to Gemini.
+    Tries local Ollama or OpenAI-compatible Qwen with non-blocking semaphore (1) and falls back immediately to Gemini.
     """
     settings = get_settings()
     if getattr(settings, "llm_provider", "gemini").lower() != "qwen":
@@ -473,6 +541,7 @@ async def swap_itinerary_day(
 
     model_name = model or ("qwen2.5:1.5b-instruct" if "1.5b" in getattr(settings, "local_llm_model", "") else getattr(settings, "local_llm_model", "qwen2.5:1.5b-instruct"))
     ollama_url = base_url or settings.local_llm_base_url
+    key = api_key if api_key is not None else getattr(settings, "local_llm_api_key", "")
     timeout_sec = timeout or settings.local_llm_timeout
 
     if _local_semaphore.locked():
@@ -492,28 +561,23 @@ async def swap_itinerary_day(
             f"Current Day Plan (Day {day_data.get('day')}):\n{json.dumps(day_data, ensure_ascii=False)}\n\n"
             f"User Instruction: {instruction}"
         )
-        payload = {
-            "model": model_name,
-            "messages": [
-                {"role": "system", "content": DAY_SWAP_SYSTEM},
-                {"role": "user", "content": prompt},
-            ],
-            "stream": False,
-            "options": {
-                "temperature": 0.0,
-                "num_predict": 384,
-            },
-            "format": DAY_SWAP_SCHEMA,
-        }
+        messages = [
+            {"role": "system", "content": DAY_SWAP_SYSTEM},
+            {"role": "user", "content": prompt},
+        ]
 
-        api_endpoint = f"{ollama_url.rstrip('/')}/api/chat"
         async with httpx.AsyncClient(timeout=float(timeout_sec)) as client:
-            resp = await client.post(api_endpoint, json=payload)
-            resp.raise_for_status()
-            res_data = resp.json()
+            raw_content = await _call_local_or_remote_chat(
+                client=client,
+                base_url=ollama_url,
+                api_key=key,
+                model_name=model_name,
+                messages=messages,
+                schema=DAY_SWAP_SCHEMA,
+                num_predict=384,
+            )
 
         latency_ms = int((time.time() - t0) * 1000)
-        raw_content = res_data.get("message", {}).get("content", "{}")
         parsed = json.loads(raw_content)
 
         if not isinstance(parsed, dict) or "sections" not in parsed:
@@ -584,15 +648,17 @@ async def generate_packing_list(
     focus: Optional[str] = None,
     model: Optional[str] = None,
     base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
     timeout: Optional[int] = None,
 ) -> tuple[list[dict], str]:
-    """Generate categorized packing items via local Ollama with instant Gemini fallback."""
+    """Generate categorized packing items via local Ollama or OpenAI-compatible Qwen with instant Gemini fallback."""
     settings = get_settings()
     if getattr(settings, "llm_provider", "gemini").lower() != "qwen":
         return await _generate_packing_list_gemini(trip_ctx, focus)
 
     model_name = model or ("qwen2.5:1.5b-instruct" if "1.5b" in getattr(settings, "local_llm_model", "") else getattr(settings, "local_llm_model", "qwen2.5:1.5b-instruct"))
     ollama_url = base_url or settings.local_llm_base_url
+    key = api_key if api_key is not None else getattr(settings, "local_llm_api_key", "")
     timeout_sec = timeout or settings.local_llm_timeout
 
     if _local_semaphore.locked():
@@ -611,28 +677,23 @@ async def generate_packing_list(
         if focus:
             prompt += f"\n\nSpecial Packing Focus: {focus}"
 
-        payload = {
-            "model": model_name,
-            "messages": [
-                {"role": "system", "content": PACKING_SYSTEM},
-                {"role": "user", "content": prompt},
-            ],
-            "stream": False,
-            "options": {
-                "temperature": 0.0,
-                "num_predict": 384,
-            },
-            "format": PACKING_SCHEMA,
-        }
+        messages = [
+            {"role": "system", "content": PACKING_SYSTEM},
+            {"role": "user", "content": prompt},
+        ]
 
-        api_endpoint = f"{ollama_url.rstrip('/')}/api/chat"
         async with httpx.AsyncClient(timeout=float(timeout_sec)) as client:
-            resp = await client.post(api_endpoint, json=payload)
-            resp.raise_for_status()
-            res_data = resp.json()
+            raw_content = await _call_local_or_remote_chat(
+                client=client,
+                base_url=ollama_url,
+                api_key=key,
+                model_name=model_name,
+                messages=messages,
+                schema=PACKING_SCHEMA,
+                num_predict=384,
+            )
 
         latency_ms = int((time.time() - t0) * 1000)
-        raw_content = res_data.get("message", {}).get("content", "{}")
         parsed = json.loads(raw_content)
         items = parsed.get("items", []) if isinstance(parsed, dict) else []
 
@@ -690,6 +751,7 @@ async def summarize_chat_messages(
     trip_ctx: str = "",
     model: Optional[str] = None,
     base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
     timeout: Optional[int] = None,
 ) -> tuple[list[str], str]:
     """Summarize recent chat into 4-5 bullet points with instant Gemini fallback."""
@@ -699,6 +761,7 @@ async def summarize_chat_messages(
 
     model_name = model or ("qwen2.5:1.5b-instruct" if "1.5b" in getattr(settings, "local_llm_model", "") else getattr(settings, "local_llm_model", "qwen2.5:1.5b-instruct"))
     ollama_url = base_url or settings.local_llm_base_url
+    key = api_key if api_key is not None else getattr(settings, "local_llm_api_key", "")
     timeout_sec = timeout or settings.local_llm_timeout
 
     if _local_semaphore.locked():
@@ -714,28 +777,23 @@ async def summarize_chat_messages(
     t0 = time.time()
     try:
         prompt = f"Trip Context: {trip_ctx}\n\nRecent Chat Messages:\n{messages_text}"
-        payload = {
-            "model": model_name,
-            "messages": [
-                {"role": "system", "content": CHAT_SUMMARY_SYSTEM},
-                {"role": "user", "content": prompt},
-            ],
-            "stream": False,
-            "options": {
-                "temperature": 0.0,
-                "num_predict": 256,
-            },
-            "format": CHAT_SUMMARY_SCHEMA,
-        }
+        messages = [
+            {"role": "system", "content": CHAT_SUMMARY_SYSTEM},
+            {"role": "user", "content": prompt},
+        ]
 
-        api_endpoint = f"{ollama_url.rstrip('/')}/api/chat"
         async with httpx.AsyncClient(timeout=float(timeout_sec)) as client:
-            resp = await client.post(api_endpoint, json=payload)
-            resp.raise_for_status()
-            res_data = resp.json()
+            raw_content = await _call_local_or_remote_chat(
+                client=client,
+                base_url=ollama_url,
+                api_key=key,
+                model_name=model_name,
+                messages=messages,
+                schema=CHAT_SUMMARY_SCHEMA,
+                num_predict=256,
+            )
 
         latency_ms = int((time.time() - t0) * 1000)
-        raw_content = res_data.get("message", {}).get("content", "{}")
         parsed = json.loads(raw_content)
         bullets = parsed.get("bullets", []) if isinstance(parsed, dict) else []
 

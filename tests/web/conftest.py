@@ -24,6 +24,11 @@ def fresh_db():
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     reset_rate_limits()
+    try:
+        from server.ai.gateway import gateway
+        gateway.reset()
+    except Exception:
+        pass
     yield
 
 
