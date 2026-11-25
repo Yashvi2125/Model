@@ -47,6 +47,9 @@ export default function ItineraryPage() {
       post<Itinerary>(`/api/trips/${trip.id}/itinerary/days/${day}/swap`, { instruction }),
     onSuccess: (it) => {
       qc.setQueryData(["itinerary", trip.id], it);
+      qc.invalidateQueries({ queryKey: ["itinerary", trip.id] });
+      qc.invalidateQueries({ queryKey: ["budget", trip.id] });
+      qc.invalidateQueries({ queryKey: ["research", trip.id] });
       setSwappingDay(null);
       setSwapInstruction("");
       toast.success("Day updated successfully!");

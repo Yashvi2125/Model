@@ -480,9 +480,13 @@ async def extract_preferences_with_fallback(
 # ── Localized Single-Day Itinerary Swaps ──────────────────────────────────────
 
 DAY_SWAP_SYSTEM = (
-    "You are an expert itinerary editor. Modify ONLY the single-day itinerary provided according to the user's instructions.\n"
-    "Keep unchanged periods intact. Do not change the day number.\n"
-    "Return JSON only matching the schema: {\"day\": int, \"title\": str, \"intro\": str, \"sections\": [{\"period\": \"morning|afternoon|evening|night\", \"content\": str}]}.\n"
+    "You are an expert itinerary editor. Your task is to update a single day of a travel itinerary to strictly fulfill the user's customization request.\n"
+    "CRITICAL RULES:\n"
+    "1. You MUST incorporate the user's requested addition, replacement, or modification directly into the day's activities.\n"
+    "2. If the user asks to add or visit a landmark/activity/restaurant (e.g. 'Add Eiffel tower visit on this day'), you MUST place it into the most suitable time period (Morning, Afternoon, Evening, or Night) with a descriptive sentence and estimated cost.\n"
+    "3. Keep other periods intact or adjust them logically to accommodate the requested change. Do not change the day number.\n"
+    "4. Return ONLY valid JSON matching this exact structure:\n"
+    '{"day": int, "title": "Day Title", "intro": "optional brief intro", "sections": [{"period": "morning|afternoon|evening|night", "content": "activity text"}]}\n'
 )
 
 DAY_SWAP_SCHEMA = {
@@ -511,14 +515,22 @@ async def _swap_itinerary_day_gemini(day_data: dict, instruction: str, trip_ctx:
     from server.ai.client import ai_status, llm_json
     prompt = (
         f"Trip Context: {trip_ctx}\n\n"
-        f"Current Day Plan (Day {day_data.get('day')}):\n{json.dumps(day_data, ensure_ascii=False)}\n\n"
-        f"User Instruction: {instruction}"
+        f"Current Day Plan (Day {day_data.get('day')}):\n{json.dumps(day_data, ensure_ascii=False, indent=2)}\n\n"
+        f"User Customization Request: {instruction}\n\n"
+        f"Please update Day {day_data.get('day')} so that '{instruction}' is fully and explicitly incorporated into the day's schedule."
     )
     t0 = time.time()
     data = await llm_json(DAY_SWAP_SYSTEM, prompt, feature="itinerary_day_swap")
     latency_ms = int((time.time() - t0) * 1000)
     model = ai_status().get("model", "gemini-3.5-flash-lite")
     log.info("provider=gemini model=%s latency_ms=%d feature=itinerary_day_swap", model, latency_ms)
+
+    if not isinstance(data, dict) or "sections" not in data or not data["sections"]:
+        raise ValueError("Invalid day structure returned from Gemini")
+
+    data["day"] = day_data.get("day", data.get("day", 1))
+    data.setdefault("title", day_data.get("title", f"Day {data['day']}"))
+    data.setdefault("intro", day_data.get("intro", ""))
     return data, "gemini"
 
 
@@ -558,8 +570,9 @@ async def swap_itinerary_day(
     try:
         prompt = (
             f"Trip Context: {trip_ctx}\n\n"
-            f"Current Day Plan (Day {day_data.get('day')}):\n{json.dumps(day_data, ensure_ascii=False)}\n\n"
-            f"User Instruction: {instruction}"
+            f"Current Day Plan (Day {day_data.get('day')}):\n{json.dumps(day_data, ensure_ascii=False, indent=2)}\n\n"
+            f"User Customization Request: {instruction}\n\n"
+            f"Please update Day {day_data.get('day')} so that '{instruction}' is fully and explicitly incorporated into the day's schedule."
         )
         messages = [
             {"role": "system", "content": DAY_SWAP_SYSTEM},

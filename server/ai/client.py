@@ -126,12 +126,16 @@ def get_client():
     OpenAI-compat client for the multi-agent travel-team. Return that client
     when asked; raise AINotConfigured when the key is missing.
     """
-    if not _configured(ai_settings.GEMINI_API_KEY):
+    has_gemini = _configured(ai_settings.GEMINI_API_KEY)
+    has_qwen = bool(getattr(ai_settings, "LOCAL_LLM_API_KEY", "")) or getattr(ai_settings, "LLM_PROVIDER", "") == "qwen"
+    if not has_gemini and not has_qwen:
         raise AINotConfigured(
-            "The AI assistant isn't set up yet. Add GEMINI_API_KEY to the .env file and restart the backend."
+            "The AI assistant isn't set up yet. Add GEMINI_API_KEY (or LOCAL_LLM_API_KEY) to the .env file and restart the backend."
         )
     from models import gemini_model
-    return gemini_model.model_client or gemini_model.create_gemini_model_client()
+    if has_gemini:
+        return gemini_model.model_client or gemini_model.create_gemini_model_client()
+    return gemini_model.create_qwen_model_client()
 
 
 # ── error helpers ─────────────────────────────────────────────────────────────

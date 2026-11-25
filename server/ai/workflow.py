@@ -82,39 +82,61 @@ def _text(msg: Any) -> str:
     return c.strip() if isinstance(c, str) else ""
 
 
-async def generate_plan(prompt: str, search_query: str) -> PlanResult:
-    get_client()  # raises AINotConfigured with a clear message if the key is missing
+def _build_team(model_name: str | None = None):
+    import agents.planner as _pl
+    import models.gemini_model as _gm
     from agents.planner import create_planner_agent
     from agents.researcher import create_researcher_agent
     from models.gemini_model import create_gemini_model_client
     from teams.travel_team import create_travel_team
+
+    custom_client = getattr(_pl, "model_client", None)
+    if custom_client is not None and custom_client is not getattr(_gm, "model_client", None):
+        client = custom_client
+    elif model_name:
+        if "qwen" in model_name.lower():
+            client = _gm.create_qwen_model_client(model=model_name)
+        else:
+            client = create_gemini_model_client(model=model_name)
+    else:
+        client = None
+    # max_turns=2 ensures Turn 1 is Planner and Turn 2 is Researcher, minimizing quota usage
+    return create_travel_team(
+        planner=create_planner_agent(client=client),
+        researcher=create_researcher_agent(client=client),
+        max_turns=2,
+    )
+
+
+async def generate_plan(prompt: str, search_query: str) -> PlanResult:
+    get_client()  # raises AINotConfigured with a clear message if the key is missing
 
     search_context, used = await _live_research(search_query)
     full_task = (f"{prompt}{search_context}\n"
                  "Instructions: Use the real-time research above (if present) to create a detailed, day-by-day itinerary "
                  "with estimated costs and recommendations. Label costs as estimates unless a source gives a fixed price.")
 
-    def _build_team(model_name: str | None = None):
-        import agents.planner as _pl
-        import models.gemini_model as _gm
-        custom_client = getattr(_pl, "model_client", None)
-        if custom_client is not None and custom_client is not getattr(_gm, "model_client", None):
-            client = custom_client
-        elif model_name:
-            client = create_gemini_model_client(model=model_name)
-        else:
-            client = None
-        # max_turns=2 ensures Turn 1 is Planner and Turn 2 is Researcher, minimizing quota usage
-        return create_travel_team(
-            planner=create_planner_agent(client=client),
-            researcher=create_researcher_agent(client=client),
-            max_turns=2,
-        )
-
     timeout = get_settings().itinerary_timeout_seconds
-    model_chain = list(ai_settings.GEMINI_MODEL_CHAIN)
-    if not model_chain:
-        model_chain = [ai_settings.GEMINI_MODEL or "gemini-3.5-flash-lite"]
+    settings = get_settings()
+    llm_provider = (getattr(ai_settings, "LLM_PROVIDER", "") or getattr(settings, "llm_provider", "gemini")).lower()
+    qwen_key = getattr(ai_settings, "LOCAL_LLM_API_KEY", "") or getattr(settings, "local_llm_api_key", "")
+    qwen_model = getattr(ai_settings, "LOCAL_LLM_MODEL", "") or getattr(settings, "local_llm_model", "qwen2.5:3b-instruct")
+
+    # Build Gemini model chain
+    gemini_chain = list(ai_settings.GEMINI_MODEL_CHAIN)
+    if not gemini_chain:
+        gemini_chain = [ai_settings.GEMINI_MODEL or "gemini-3.5-flash-lite"]
+
+    # Candidate chain selection
+    if llm_provider == "qwen" and qwen_key:
+        # Hosted Groq Qwen on Render: Put Qwen FIRST, Gemini models right after as automatic fallback
+        model_chain = [qwen_model] + [m for m in gemini_chain if m != qwen_model]
+    elif llm_provider == "qwen" and not qwen_key:
+        # Local CPU Ollama: Keep Gemini as primary to prevent laptop CPU overload, local Qwen as fallback
+        model_chain = gemini_chain + [qwen_model]
+    else:
+        # LLM_PROVIDER == "gemini": Gemini primary
+        model_chain = gemini_chain
 
     candidate_models = [m for m in model_chain if is_model_available(m)]
     if not candidate_models:
@@ -152,8 +174,8 @@ async def generate_plan(prompt: str, search_query: str) -> PlanResult:
                 log.warning("Model '%s' hit rate limit during planning (%s); falling back to next model", model_name, exc)
             else:
                 err_str = str(exc).lower()
-                is_recoverable = any(k in err_str for k in ("503", "404", "overloaded", "unavailable", "not_found"))
-                if is_recoverable:
+                is_recoverable = any(k in err_str for k in ("503", "404", "429", "overloaded", "unavailable", "not_found", "connection", "connect", "timeout"))
+                if is_recoverable or "qwen" in model_name.lower():
                     log.warning("Model '%s' encountered recoverable error (%s); trying next model in chain", model_name, exc)
                 else:
                     raise friendly_error(exc) from exc

@@ -1,6 +1,6 @@
 from datetime import date
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -238,3 +238,166 @@ def test_conflicts_report_how_many_members_have_shared(user_a, user_b, monkeypat
     assert joined["member_count"] == 2 and joined["members_sharing"] == 1  # Ravi hasn't shared anything yet
     user_b.put(f"/api/trips/{tid}/preferences/me", json={"interests": ["nightlife"]})
     assert user_a.get(f"/api/trips/{tid}/conflicts").json()["members_sharing"] == 2
+
+
+@pytest.mark.asyncio
+async def test_hosted_qwen_primary_with_gemini_fallback(monkeypatch):
+    """Verifies that when LLM_PROVIDER='qwen' and LOCAL_LLM_API_KEY is non-empty,
+    Qwen runs first as primary for full itinerary generation, with Gemini as automatic fallback.
+    When LOCAL_LLM_API_KEY is empty (local CPU Ollama), Gemini remains primary.
+    """
+    import server.ai.workflow as wf
+    import config.settings as ai_settings
+    import server.config as srv_config
+    from autogen_agentchat.messages import TextMessage
+
+    # 1. Test hosted Qwen primary: LLM_PROVIDER="qwen" and LOCAL_LLM_API_KEY set
+    monkeypatch.setattr(ai_settings, "LLM_PROVIDER", "qwen")
+    monkeypatch.setattr(ai_settings, "LOCAL_LLM_API_KEY", "gsk_test_groq_key")
+    monkeypatch.setattr(ai_settings, "LOCAL_LLM_MODEL", "qwen-2.5-32b")
+    monkeypatch.setattr(ai_settings, "GEMINI_MODEL_CHAIN", ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"])
+    monkeypatch.setattr(srv_config.get_settings(), "llm_provider", "qwen")
+    monkeypatch.setattr(srv_config.get_settings(), "local_llm_api_key", "gsk_test_groq_key")
+    monkeypatch.setattr(srv_config.get_settings(), "local_llm_model", "qwen-2.5-32b")
+
+    # Track which models are attempted in order
+    attempted_models = []
+
+    class MockTravelTeam:
+        def __init__(self, model_name):
+            self.model_name = model_name
+
+        async def run(self, task):
+            attempted_models.append(self.model_name)
+            if "qwen" in self.model_name.lower():
+                # Simulate Qwen failing with temporary error to trigger fallback
+                raise RuntimeError("503 Service Unavailable: Hosted Qwen busy")
+            # Gemini fallback succeeds
+            word = ai_settings.TERMINATION_WORD
+            return type("Result", (), {
+                "messages": [
+                    TextMessage(content=f"## Day 1: Paris\nVisit Eiffel Tower\n{word}", source="Travel_Planner"),
+                    TextMessage(content=f"Research complete.\n{word}", source="Researcher"),
+                ]
+            })()
+
+    def mock_build_team(model_name=None):
+        return MockTravelTeam(model_name)
+
+    monkeypatch.setattr(wf, "_build_team", mock_build_team)
+    monkeypatch.setattr(wf, "_live_research", AsyncMock(return_value=("", False)))
+
+    res = await wf.generate_plan("Plan a 1-day trip to Paris", "Paris")
+    # Qwen must be attempted FIRST, followed by Gemini fallback
+    assert attempted_models[0] == "qwen-2.5-32b"
+    assert attempted_models[1] == "gemini-3.5-flash-lite"
+    assert "Eiffel Tower" in res.plan
+
+    # 2. Test local CPU Ollama: LOCAL_LLM_API_KEY is empty -> Gemini primary
+    attempted_models.clear()
+    monkeypatch.setattr(ai_settings, "LOCAL_LLM_API_KEY", "")
+    monkeypatch.setattr(srv_config.get_settings(), "local_llm_api_key", "")
+
+    class MockGeminiPrimaryTeam:
+        def __init__(self, model_name):
+            self.model_name = model_name
+
+        async def run(self, task):
+            attempted_models.append(self.model_name)
+            word = ai_settings.TERMINATION_WORD
+            return type("Result", (), {
+                "messages": [
+                    TextMessage(content=f"## Day 1: Paris\nVisit Louvre\n{word}", source="Travel_Planner"),
+                    TextMessage(content=f"Research complete.\n{word}", source="Researcher"),
+                ]
+            })()
+
+    monkeypatch.setattr(wf, "_build_team", lambda m=None: MockGeminiPrimaryTeam(m))
+    res2 = await wf.generate_plan("Plan a 1-day trip to Paris", "Paris")
+    assert attempted_models[0] == "gemini-3.5-flash-lite"
+    assert "Louvre" in res2.plan
+
+
+def test_single_day_swap_modifies_and_persists_itinerary_day(user_a, monkeypatch):
+    """Test that single-day customize ('Update Day') modifies the target day's activities
+    according to user instructions, persists to PostgreSQL/Supabase via flag_modified,
+    and returns the updated day so the UI renders it immediately.
+    """
+    from server.db import SessionLocal
+    from server.models import Itinerary
+
+    t = make_trip(user_a)
+    trip_id = t["id"]
+
+    # Seed an itinerary with 2 days
+    initial_days = {
+        "overview": "Paris trip",
+        "days": [
+            {
+                "day": 1,
+                "title": "Day 1: Arrival",
+                "intro": "Welcome",
+                "sections": [{"period": "morning", "content": "Check into hotel"}],
+                "places": []
+            },
+            {
+                "day": 2,
+                "title": "Day 2: Art & Gardens",
+                "intro": "",
+                "sections": [
+                    {"period": "morning", "content": "Visit the Louvre Museum early."},
+                    {"period": "afternoon", "content": "Picnic in Tuileries Garden."},
+                    {"period": "evening", "content": "Walk along the Seine."}
+                ],
+                "places": []
+            }
+        ]
+    }
+
+    with SessionLocal() as session:
+        it = Itinerary(
+            trip_id=trip_id,
+            version=1,
+            status="succeeded",
+            days=initial_days,
+            plan_markdown="## Day 1\nCheck into hotel\n## Day 2\nVisit the Louvre Museum early."
+        )
+        session.add(it)
+        session.commit()
+
+    # Mock swap_itinerary_day to return updated Day 2 with user instruction applied
+    async def mock_swap_itinerary_day(day_data, instruction, trip_ctx=""):
+        assert "Eiffel tower" in instruction
+        assert day_data["day"] == 2
+        return {
+            "day": 2,
+            "title": "Day 2: Art & Eiffel Tower",
+            "intro": "Updated day with iconic tower",
+            "sections": [
+                {"period": "morning", "content": "Visit the Eiffel Tower and take photos."},
+                {"period": "afternoon", "content": "Picnic in Tuileries Garden."},
+                {"period": "evening", "content": "Walk along the Seine."}
+            ]
+        }, "qwen"
+
+    monkeypatch.setattr("server.ai.local_llm.swap_itinerary_day", mock_swap_itinerary_day)
+
+    # 1. Call POST day swap endpoint
+    resp = user_a.post(
+        f"/api/trips/{trip_id}/itinerary/days/2/swap",
+        json={"instruction": "Add Eiffel tower visit on this day"}
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+
+    # Verify Day 2 in returned response has Eiffel Tower
+    day2 = next(d for d in data["days"]["days"] if d["day"] == 2)
+    assert "Eiffel Tower" in day2["title"] or "Eiffel Tower" in day2["sections"][0]["content"]
+
+    # 2. Refetch via GET endpoint to ensure changes are 100% persisted in DB
+    refetch = user_a.get(f"/api/trips/{trip_id}/itinerary").json()
+    refetched_day2 = next(d for d in refetch["days"]["days"] if d["day"] == 2)
+    assert refetched_day2["sections"][0]["content"] == "Visit the Eiffel Tower and take photos."
+    assert refetched_day2["title"] == "Day 2: Art & Eiffel Tower"
+    assert "Eiffel Tower" in refetch["plan_markdown"]
+

@@ -138,6 +138,72 @@ def create_gemini_model_client(
     return client
 
 
+def create_qwen_model_client(
+    model: Optional[str] = None,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> OpenAIChatCompletionClient:
+    """
+    Create an AutoGen OpenAIChatCompletionClient configured for Qwen (hosted Groq or local Ollama).
+    """
+    from autogen_core.models import ModelFamily
+    import config.settings as ai_settings
+
+    effective_model = model or getattr(ai_settings, "LOCAL_LLM_MODEL", "qwen2.5:3b-instruct")
+    raw_url = base_url or getattr(ai_settings, "LOCAL_LLM_BASE_URL", "http://host.docker.internal:11434")
+    norm_url = raw_url.rstrip("/")
+    if not norm_url.endswith("/v1"):
+        norm_url = f"{norm_url}/v1"
+    effective_key = api_key if api_key is not None else getattr(ai_settings, "LOCAL_LLM_API_KEY", "")
+    if not effective_key:
+        effective_key = "ollama"
+
+    client = OpenAIChatCompletionClient(
+        model=effective_model,
+        api_key=effective_key,
+        base_url=norm_url,
+        max_retries=1,
+        timeout=180.0,
+        model_info={
+            "vision": False,
+            "function_calling": True,
+            "json_output": True,
+            "family": ModelFamily.UNKNOWN,
+            "structured_output": False,
+        },
+    )
+
+    orig_create = client.create
+
+    async def throttled_qwen_create(*args, **kwargs):
+        from server.ai.gateway import (
+            PRIORITY_URGENT,
+            gateway,
+            is_overload_error,
+            is_rate_limit_error,
+        )
+
+        if gateway.is_enabled():
+            await gateway.acquire_slot(
+                model=effective_model,
+                priority=PRIORITY_URGENT,
+                feature="itinerary_planning",
+            )
+        try:
+            res = await orig_create(*args, **kwargs)
+            if gateway.is_enabled():
+                gateway.record_call(feature="itinerary_planning", model=effective_model, status=200)
+            return res
+        except Exception as exc:
+            if gateway.is_enabled():
+                code = getattr(exc, "status_code", None) or ("429" if is_rate_limit_error(exc) else "503" if is_overload_error(exc) else "error")
+                gateway.record_call(feature="itinerary_planning", model=effective_model, status=code)
+            raise
+
+    client.create = throttled_qwen_create
+    return client
+
+
 # Default model client instance for AutoGen agents
 try:
     if GEMINI_API_KEY:

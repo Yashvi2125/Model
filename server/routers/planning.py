@@ -113,6 +113,9 @@ async def swap_day(
     days_data["days"] = days_list
     it.days = dict(days_data)
 
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(it, "days")
+
     # Reconstruct plan_markdown
     md_parts = [days_data.get("overview", "")]
     for d in days_list:
