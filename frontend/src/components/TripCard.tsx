@@ -32,7 +32,7 @@ export function TripCard({ trip, onDelete }: { trip: TripSummary; onDelete?: (tr
               e.stopPropagation();
               onDelete(trip);
             }}
-            className="-mr-1 -mt-1 flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-xl text-ink-400 transition-colors hover:bg-coral-100 hover:text-coral-700"
+            className="-mr-1 -mt-1 flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-xl text-coral-500 transition-colors hover:bg-coral-100 hover:text-coral-700"
             title={`Delete ${trip.name}`}
             aria-label={`Delete ${trip.name}`}
           >

@@ -1,31 +1,17 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Luggage, Plus } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
+import { DeleteTripDialog } from "../components/DeleteTripDialog";
 import { TripCard } from "../components/TripCard";
-import { Button, EmptyState, PageLoader, QueryError } from "../components/ui";
-import { useToast } from "../context/Toast";
-import { api, errorMessage } from "../lib/api";
+import { EmptyState, PageLoader, QueryError } from "../components/ui";
+import { api } from "../lib/api";
 import type { TripSummary } from "../lib/types";
 
 export default function MyTrips() {
-  const qc = useQueryClient();
-  const toast = useToast();
   const q = useQuery({ queryKey: ["trips"], queryFn: () => api<TripSummary[]>("/api/trips") });
   const [filter, setFilter] = useState<"all" | "owner" | "member">("all");
   const [tripToDelete, setTripToDelete] = useState<TripSummary | null>(null);
-
-  const deleteMutation = useMutation({
-    mutationFn: (tripId: number) => api(`/api/trips/${tripId}`, { method: "DELETE" }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["trips"] });
-      toast.success("Trip deleted successfully.");
-      setTripToDelete(null);
-    },
-    onError: (err) => {
-      toast.error(errorMessage(err));
-    },
-  });
 
   const trips = (q.data ?? []).filter((t) => filter === "all" || t.my_role === filter);
   return (
@@ -53,38 +39,7 @@ export default function MyTrips() {
             </div>}
       </div>
 
-      {tripToDelete && (
-        <div
-          className="fixed inset-0 z-50 flex animate-fade-in items-center justify-center bg-ink-950/50 p-4 backdrop-blur-md"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="delete-trip-title"
-        >
-          <div className="w-full max-w-md animate-fade-up rounded-[2rem] border border-white bg-white p-7 shadow-float">
-            <h3 id="delete-trip-title" className="text-xl font-bold text-ink-950">Delete Trip</h3>
-            <p className="mt-3 text-sm leading-relaxed text-ink-600">
-              Are you sure you want to delete <strong className="font-semibold text-ink-900">“{tripToDelete.name}”</strong>?
-              This will permanently delete the trip, member preferences, chat history, itineraries, and checklist for everyone.
-            </p>
-            <div className="mt-6 flex justify-end gap-3">
-              <Button
-                variant="secondary"
-                disabled={deleteMutation.isPending}
-                onClick={() => setTripToDelete(null)}
-              >
-                Cancel
-              </Button>
-              <Button
-                variant="danger"
-                loading={deleteMutation.isPending}
-                onClick={() => deleteMutation.mutate(tripToDelete.id)}
-              >
-                Delete trip
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      {tripToDelete && <DeleteTripDialog trip={tripToDelete} onClose={() => setTripToDelete(null)} />}
     </div>
   );
 }
