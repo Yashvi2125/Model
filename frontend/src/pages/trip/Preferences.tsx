@@ -134,7 +134,7 @@ export default function Preferences() {
   const me = q.data.members.find((m) => m.is_me)!;
   return (
     <div className="space-y-5">
-      <div><h2 className="text-2xl font-bold">Trip preferences</h2><p className="text-ink-500">What each member wants. Update yours any time — the AI only suggests, you decide.</p></div>
+      <div><h2 className="text-2xl font-bold sm:text-3xl">Trip preferences</h2><p className="text-ink-500">What each member wants. Update yours any time — the AI only suggests, you decide.</p></div>
       {q.data.trip_missing.includes("destination") && <Alert kind="warning">No destination has been chosen yet. Add one in your preferences or in chat so an itinerary can be planned.</Alert>}
       {q.data.my_suggestions.length > 0 && (
         <section aria-label="AI suggestions"><h3 className="mb-2 font-semibold">Suggestions from the AI for you</h3>

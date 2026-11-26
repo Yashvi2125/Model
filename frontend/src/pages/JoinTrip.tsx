@@ -37,9 +37,9 @@ export default function JoinTrip() {
 
   return (
     <div className="mx-auto max-w-xl">
-      <h1 className="text-3xl font-bold">Join a Trip</h1>
+      <div><span className="eyebrow">Invite</span><h1 className="mt-3 text-3xl font-bold sm:text-4xl">Join a Trip</h1></div>
       <p className="mt-1 text-ink-500">Enter the trip code from your organiser, or open the invite link they shared.</p>
-      <form onSubmit={submit} className="card mt-6 space-y-4 p-6" noValidate>
+      <form onSubmit={submit} className="card mt-6 space-y-4 p-6 sm:p-8" noValidate>
         <Input label="Trip code" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} placeholder="e.g. K7MQ-4XNP"
           autoCapitalize="characters" autoComplete="off" spellCheck={false} />
         {error && <Alert>{error}</Alert>}
@@ -47,7 +47,7 @@ export default function JoinTrip() {
       </form>
 
       {preview && (
-        <div className="card mt-6 p-6" aria-live="polite">
+        <div className="card mt-6 animate-fade-up p-6 sm:p-8" aria-live="polite">
           <h2 className="text-xl font-semibold">{preview.name}</h2>
           <p className="text-sm text-ink-500">Organised by {preview.owner_name}</p>
           <ul className="mt-4 space-y-2 text-ink-700">

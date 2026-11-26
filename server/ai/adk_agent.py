@@ -1,6 +1,6 @@
 """Google Agent Development Kit (ADK) Travel Advisor Agent.
 
-Connects Gemini API and Google ADK directly to TripMate backend services, database,
+Connects Gemini API and Google ADK directly to MileMates backend services, database,
 and Telegraph publishing.
 """
 import asyncio
@@ -169,7 +169,7 @@ ADK_TOOLS = [
 ]
 
 ADK_INSTRUCTION = (
-    "You are the TripMate Travel Advisor & Coordinator, an expert AI assistant designed to help groups "
+    "You are the MileMates Travel Advisor & Coordinator, an expert AI assistant designed to help groups "
     "plan seamless trips. You are accessible via Telegram and Web.\n"
     "Your responsibilities:\n"
     "1. Recommend destinations, sights, hotels, and local food tailored to group preferences.\n"

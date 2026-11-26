@@ -31,7 +31,7 @@ MISS_TTL = 86400  # 24 hours
 
 _nominatim_last_call = 0.0
 _nominatim_blocked_until = 0.0
-_USER_AGENT = "TripMate-Travel-Planner/1.0 (https://tripmate.app; info@tripmate.app)"
+_USER_AGENT = "MileMates-Travel-Planner/1.0 (https://tripmate.app; info@tripmate.app)"
 
 WMO = {
     0: "Clear sky", 1: "Mostly clear", 2: "Partly cloudy", 3: "Overcast", 45: "Fog", 48: "Rime fog",

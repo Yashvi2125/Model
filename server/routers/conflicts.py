@@ -103,7 +103,7 @@ async def analyze(a: TripAccess = Depends(trip_access), db: Session = Depends(ge
             .limit(CHAT_SCAN_LIMIT)
         ).all()
         if recent_msgs:
-            chat_lines = [f"{(m.sender.name if m.sender else 'TripMate AI')}: {m.content[:300]}"
+            chat_lines = [f"{(m.sender.name if m.sender else 'MileMates AI')}: {m.content[:300]}"
                           for m in reversed(recent_msgs)]
             chat_text = "\n".join(chat_lines)
     except Exception as exc:  # noqa: BLE001

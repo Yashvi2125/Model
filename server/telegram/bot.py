@@ -1,4 +1,4 @@
-"""TripMate Telegram Group & DM Bot powered by Google ADK and Gemini."""
+"""MileMates Telegram Group & DM Bot powered by Google ADK and Gemini."""
 import asyncio
 from datetime import date, datetime, timedelta
 import html
@@ -269,7 +269,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
     help_text = (
-        f"👋 <b>Hello {escape_html(tg_user.first_name)}! Welcome to TripMate AI.</b>\n\n"
+        f"👋 <b>Hello {escape_html(tg_user.first_name)}! Welcome to MileMates AI.</b>\n\n"
         "I am your collaborative travel planning companion powered by Google ADK & Gemini.\n\n"
         "<b>Available Commands:</b>\n"
         "• <code>/newtrip Goa</code> - Create a new trip\n"
@@ -486,7 +486,7 @@ async def cmd_jointrip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Links a Telegram account to a TripMate web account using a one-time code.
+    """Links a Telegram account to a MileMates web account using a one-time code.
     Private chat only for security. Deletes the /link message immediately.
     """
     if not update.effective_user or not update.effective_chat:

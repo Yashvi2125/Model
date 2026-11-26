@@ -37,23 +37,32 @@ export default function AppShell() {
 
   const nav = (
     <nav aria-label="Main" className="flex h-full flex-col">
-      <div className="px-5 py-5"><Logo to="/app" /></div>
-      <ul className="flex-1 space-y-1 px-3">
+      <div className="px-6 pb-4 pt-6"><Logo to="/app" /></div>
+      <p className="px-6 pb-2 pt-3 text-[11px] font-bold uppercase tracking-[.16em] text-ink-400">Workspace</p>
+      <ul className="flex-1 space-y-1 overflow-y-auto px-3">
         {items.map(({ to, label, icon: Icon, end }) => (
           <li key={to}>
             <NavLink to={to} end={end}
-              className={({ isActive }) => `flex items-center gap-3 rounded-xl px-3 py-2.5 text-[15px] font-medium transition-colors ${isActive ? "bg-lagoon-50 text-lagoon-800" : "text-ink-700 hover:bg-sand-100"}`}>
-              <Icon className="h-[18px] w-[18px]" aria-hidden />{label}
+              className={({ isActive }) => `group relative flex items-center gap-3 rounded-2xl px-3.5 py-2.5 text-[15px] font-medium transition-all duration-200 ${isActive ? "bg-lagoon-50 text-lagoon-800 ring-1 ring-lagoon-100" : "text-ink-700 hover:bg-sand-100 hover:text-ink-900"}`}>
+              {({ isActive }) => (
+                <>
+                  {isActive && <span className="absolute -left-3 top-1/2 h-6 w-1 -translate-y-1/2 rounded-r-full bg-lagoon-600" aria-hidden />}
+                  <span className={`flex h-8 w-8 items-center justify-center rounded-xl transition-colors ${isActive ? "bg-lagoon-600 text-white shadow-glow" : "bg-sand-100 text-ink-500 group-hover:bg-white group-hover:text-lagoon-700"}`}>
+                    <Icon className="h-[17px] w-[17px]" aria-hidden />
+                  </span>
+                  {label}
+                </>
+              )}
             </NavLink>
           </li>
         ))}
       </ul>
       <div className="border-t border-sand-200 p-3">
-        <div className="mb-2 flex items-center gap-3 px-2 py-1.5">
+        <div className="mb-1 flex items-center gap-3 rounded-2xl px-2 py-2">
           <Avatar name={user!.name} />
-          <div className="min-w-0"><p className="truncate text-sm font-semibold">{user!.name}</p><p className="truncate text-xs text-ink-500">{user!.email}</p></div>
+          <div className="min-w-0"><p className="truncate text-sm font-semibold text-ink-900">{user!.name}</p><p className="truncate text-xs text-ink-500">{user!.email}</p></div>
         </div>
-        <button onClick={doLogout} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-[15px] font-medium text-ink-700 hover:bg-sand-100">
+        <button onClick={doLogout} className="flex w-full items-center gap-3 rounded-2xl px-3.5 py-2.5 text-[15px] font-medium text-ink-700 transition-colors hover:bg-coral-100 hover:text-coral-700">
           <LogOut className="h-[18px] w-[18px]" aria-hidden />Log out
         </button>
       </div>
@@ -61,27 +70,28 @@ export default function AppShell() {
   );
 
   return (
-    <div className="min-h-screen lg:flex">
-      <aside className="no-print sticky top-0 hidden h-screen w-64 shrink-0 border-r border-sand-200 bg-white lg:block">{nav}</aside>
+    <div className="min-h-screen lg:flex lg:gap-0">
+      <aside className="no-print sticky top-0 hidden h-screen w-72 shrink-0 p-3 lg:block">
+        <div className="glass h-full rounded-[2rem] shadow-card ring-1 ring-sand-200/80">{nav}</div>
+      </aside>
 
-      <header className="no-print sticky top-0 z-30 flex items-center justify-between border-b border-sand-200 bg-white/90 px-4 py-3 backdrop-blur lg:hidden">
+      <header className="no-print sticky top-0 z-30 flex items-center justify-between border-b border-white/60 bg-white/80 px-4 py-2 backdrop-blur-xl lg:hidden">
         <Logo to="/app" />
-        <button className="btn-ghost !p-2 min-h-[44px] min-w-[44px] flex items-center justify-center" aria-label="Open menu" aria-expanded={open} onClick={() => setOpen(true)}><Menu className="h-6 w-6" /></button>
+        <button className="btn-ghost !p-2 flex min-h-[44px] min-w-[44px] items-center justify-center" aria-label="Open menu" aria-expanded={open} onClick={() => setOpen(true)}><Menu className="h-6 w-6" /></button>
       </header>
       {open && (
         <div className="no-print fixed inset-0 z-40 lg:hidden" role="dialog" aria-modal="true" aria-label="Menu">
-          <div className="absolute inset-0 bg-ink-950/40" onClick={() => setOpen(false)} />
-          <div className="absolute inset-y-0 left-0 w-72 max-w-[85%] bg-white shadow-xl">
-            <button className="btn-ghost absolute right-2 top-3 !p-2 min-h-[44px] min-w-[44px] flex items-center justify-center" aria-label="Close menu" onClick={() => setOpen(false)}><X className="h-5 w-5" /></button>
+          <div className="absolute inset-0 animate-fade-in bg-ink-950/50 backdrop-blur-sm" onClick={() => setOpen(false)} />
+          <div className="absolute inset-y-0 left-0 w-80 max-w-[88%] animate-fade-in bg-white shadow-float">
+            <button className="absolute right-3 top-5 z-10 flex min-h-[44px] min-w-[44px] items-center justify-center rounded-xl text-ink-700 hover:bg-sand-100" aria-label="Close menu" onClick={() => setOpen(false)}><X className="h-5 w-5" /></button>
             {nav}
           </div>
         </div>
       )}
 
       <main className="min-w-0 flex-1">
-        <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:py-8"><Outlet /></div>
+        <div className="mx-auto w-full max-w-6xl animate-fade-up px-3 py-3 sm:px-6 sm:py-6 lg:px-8 lg:py-8"><Outlet /></div>
       </main>
     </div>
   );
 }
-

@@ -53,18 +53,18 @@ export default function CreateTrip() {
 
   return (
     <div className="mx-auto max-w-2xl">
-      <h1 className="text-3xl font-bold">Create a Trip</h1>
+      <div><span className="eyebrow">New trip</span><h1 className="mt-3 text-3xl font-bold sm:text-4xl">Create a Trip</h1></div>
       <ol className="mt-6 flex items-center gap-2" aria-label="Progress">
         {STEPS.map((s, i) => (
           <li key={s} className="flex flex-1 items-center gap-2" aria-current={i === step ? "step" : undefined}>
-            <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold ${i < step ? "bg-lagoon-600 text-white" : i === step ? "bg-lagoon-50 text-lagoon-800 ring-2 ring-lagoon-600" : "bg-sand-200 text-ink-500"}`}>
+            <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold ${i < step ? "bg-lagoon-600 text-white shadow-glow" : i === step ? "bg-white text-lagoon-800 ring-2 ring-lagoon-600 shadow-card" : "bg-sand-200 text-ink-500"}`}>
               {i < step ? <Check className="h-4 w-4" /> : i + 1}</span>
             <span className={`hidden text-sm font-medium sm:block ${i === step ? "text-ink-900" : "text-ink-500"}`}>{s}</span>
-            {i < STEPS.length - 1 && <span className="h-px flex-1 bg-sand-300" />}
+            {i < STEPS.length - 1 && <span className={`h-0.5 flex-1 rounded-full ${i < step ? "bg-lagoon-600" : "bg-sand-300"}`} />}
           </li>))}
       </ol>
 
-      <div className="card mt-6 space-y-5 p-6">
+      <div className="card mt-6 space-y-5 p-6 sm:p-8">
         {step === 0 && <>
           <h2 className="text-xl font-semibold">The basics</h2>
           <Input label="Trip name" value={d.name} onChange={(e) => set("name", e.target.value)} error={errors.name} placeholder="Goa with the college gang" />
@@ -90,7 +90,7 @@ export default function CreateTrip() {
           </div>
           <fieldset><legend className="mb-2 text-sm font-semibold">How flexible is the budget?</legend>
             <div className="grid gap-2 sm:grid-cols-3">{FLEX.map(([v, l, h]) => (
-              <label key={v} className={`cursor-pointer rounded-xl border p-3 text-sm ${d.flexibility === v ? "border-lagoon-600 bg-lagoon-50" : "border-sand-300 bg-white hover:bg-sand-100"} focus-within:ring-2 focus-within:ring-lagoon-600`}>
+              <label key={v} className={`cursor-pointer rounded-2xl border p-3.5 text-sm ${d.flexibility === v ? "border-lagoon-600 bg-lagoon-50 shadow-card" : "border-sand-300 bg-white hover:border-lagoon-200 hover:bg-lagoon-50/50"} transition-all focus-within:ring-2 focus-within:ring-lagoon-600`}>
                 <input type="radio" name="flex" className="sr-only" checked={d.flexibility === v} onChange={() => set("flexibility", v)} />
                 <span className="block font-semibold">{l}</span><span className="text-ink-500">{h}</span></label>))}</div></fieldset>
         </>}

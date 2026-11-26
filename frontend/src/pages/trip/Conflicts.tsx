@@ -20,15 +20,15 @@ function ConflictCard({ c, tripId, memberCount, isOwner }: { c: Conflict; tripId
   const agrees = Object.values(c.votes).filter((v) => v === "agree").length;
   const disagrees = Object.values(c.votes).filter((v) => v === "disagree").length;
   return (
-    <article className="card p-5">
+    <article className="card card-hover p-6">
       <header className="flex flex-wrap items-start justify-between gap-2">
         <div><h3 className="text-lg font-semibold">{c.title}</h3><p className="mt-0.5 text-ink-500">{c.description}</p></div>
         {c.status === "accepted" ? <Badge tone="teal"><CircleCheck className="h-3 w-3" />Everyone agreed</Badge> : <Badge tone="amber">Not decided</Badge>}
       </header>
       {c.positions.length > 0 && <ul className="mt-3 space-y-1 text-[15px]">{c.positions.map((p, i) => <li key={i}><span className="font-semibold">{p.name}</span> — {p.detail}</li>)}</ul>}
       {c.suggestion ? (
-        <div className="mt-4 rounded-xl border border-lagoon-200 bg-lagoon-50 p-4">
-          <p className="text-sm font-semibold text-lagoon-800">Suggested compromise (from TripMate AI)</p>
+        <div className="mt-4 rounded-2xl border border-lagoon-200 bg-gradient-to-br from-lagoon-50 to-white p-5">
+          <p className="text-sm font-semibold text-lagoon-800">Suggested compromise (from MileMates AI)</p>
           <p className="mt-1 text-[15px]">{c.suggestion}</p>
           <p className="mt-2 text-xs text-ink-500">A suggestion isn’t a decision. It’s marked as agreed only once all {memberCount} members agree. So far: {agrees} agree, {disagrees} disagree.</p>
           <div className="mt-3 flex flex-wrap gap-2">
@@ -38,7 +38,7 @@ function ConflictCard({ c, tripId, memberCount, isOwner }: { c: Conflict; tripId
           </div>
         </div>
       ) : (
-        <div className="mt-4 flex flex-wrap items-center gap-3 rounded-xl bg-sand-100 p-4 text-sm text-ink-700">No compromise has been proposed yet.
+        <div className="mt-4 flex flex-wrap items-center gap-3 rounded-2xl bg-sand-100 p-4 text-sm text-ink-700">No compromise has been proposed yet.
           <Button variant="ghost" className="!py-1.5" loading={discuss.isPending} onClick={() => discuss.mutate()}><MessageCircle className="h-4 w-4" />Discuss in chat</Button></div>)}
       {isOwner && <div className="mt-3 text-right"><button className="text-sm text-ink-500 underline" disabled={dismiss.isPending} onClick={() => dismiss.mutate()}>Dismiss this item</button></div>}
     </article>
@@ -69,7 +69,7 @@ export default function Conflicts() {
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <div><h2 className="text-2xl font-bold">Find common ground</h2><p className="max-w-xl text-ink-500">Compares what members have saved in Preferences, lists where you differ, and proposes a compromise for the group to vote on.</p></div>
+        <div><h2 className="text-2xl font-bold sm:text-3xl">Find common ground</h2><p className="max-w-xl text-ink-500">Compares what members have saved in Preferences, lists where you differ, and proposes a compromise for the group to vote on.</p></div>
         <Button onClick={() => analyze.mutate()} loading={analyze.isPending}><ScanSearch className="h-4 w-4" />{analyze.isPending ? "Analysing…" : "Check for disagreements"}</Button>
       </div>
       {analyze.data?.ai_error && <Alert kind="warning">The differences below were found automatically, but compromises couldn’t be suggested: {analyze.data.ai_error}</Alert>}

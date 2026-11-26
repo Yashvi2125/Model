@@ -1,4 +1,4 @@
-# TripMate AI — Multi-Agent Group Trip Planner
+# MileMates AI — Multi-Agent Group Trip Planner
 
 A full-stack collaborative travel planning application: shared group chat, AI preference extraction, conflict detection with automated compromises, day-by-day AI itineraries, real-time budget arithmetic, and collaborative checklists.
 
@@ -102,7 +102,7 @@ When running locally on different computers:
 
 ## 🤖 Telegram Group Bot & Google ADK Integration
 
-TripMate AI includes a dual-interface architecture: members of the **SAME trip** can plan from a **Telegram Group** or from the **Web Chat Room**, and see each other's messages, preferences, and the same generated plan synchronized in real time!
+MileMates AI includes a dual-interface architecture: members of the **SAME trip** can plan from a **Telegram Group** or from the **Web Chat Room**, and see each other's messages, preferences, and the same generated plan synchronized in real time!
 
 ### 🌟 Features
 1. **Google ADK Travel Advisor Agent (`google-adk`)**: Powered by Gemini API with multi-turn conversational memory via ADK `SessionService`.
@@ -117,14 +117,14 @@ TripMate AI includes a dual-interface architecture: members of the **SAME trip**
 
 1. **Create the Bot:**
    - Open Telegram and message [@BotFather](https://t.me/BotFather).
-   - Send `/newbot`, name your bot (e.g., `TripMate AI`), and choose a username (e.g., `Tripmate_planner_bot`).
+   - Send `/newbot`, name your bot (e.g., `MileMates AI`), and choose a username (e.g., `Tripmate_planner_bot`).
    - Copy the HTTP API token into `.env` under `TELEGRAM_BOT_TOKEN`.
 
 2. **IMPORTANT: Disable Group Privacy Mode:**
    - In [@BotFather](https://t.me/BotFather), send `/setprivacy`.
    - Select your bot (`@Tripmate_planner_bot`).
    - Choose **Disable**.
-   - *(Why? Telegram restricts bots to seeing only messages that mention them unless privacy mode is disabled. Disabling it allows TripMate AI to passively read preferences from the group conversation).*
+   - *(Why? Telegram restricts bots to seeing only messages that mention them unless privacy mode is disabled. Disabling it allows MileMates AI to passively read preferences from the group conversation).*
 
 3. **Add Bot to Group:**
    - Add `@Tripmate_planner_bot` to your trip group.
@@ -224,7 +224,7 @@ When `TELEGRAM_MODE=webhook`, the backend automatically registers the webhook wi
 
 ## 🧪 Running Automated Tests
 
-TripMate includes an isolated, safe test suite with built-in database protection guards.
+MileMates includes an isolated, safe test suite with built-in database protection guards.
 
 ### Running in Docker (PostgreSQL)
 Tests automatically detect PostgreSQL and use a separate, dedicated `tripmate_test` database (auto-created if missing). Your live `tripmate` database data is never touched:

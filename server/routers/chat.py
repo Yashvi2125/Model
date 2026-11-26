@@ -80,7 +80,7 @@ async def summarize_chat(
     ctx = trip_context(a.trip, pref_rows)
 
     recent_txt = "\n".join(
-        f"{(r.sender.name if r.sender else 'TripMate AI')}: {r.content[:300]}"
+        f"{(r.sender.name if r.sender else 'MileMates AI')}: {r.content[:300]}"
         for r in reversed(recent)
     )
 

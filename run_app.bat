@@ -1,9 +1,9 @@
 @echo off
-title TripMate AI - Local Runner
+title MileMates AI - Local Runner
 cd /d "%~dp0"
 
 echo ============================================================
-echo   TripMate AI - Group Trip Planner
+echo   MileMates AI - Group Trip Planner
 echo ============================================================
 echo.
 
@@ -53,15 +53,15 @@ cd ..
 
 echo.
 echo ============================================================
-echo   Starting TripMate AI Services
+echo   Starting MileMates AI Services
 echo   Backend  : http://localhost:8000
 echo   Frontend : http://localhost:5173
 echo ============================================================
 echo.
 
-start "TripMate Backend" powershell -ExecutionPolicy Bypass -File .\start_dev.ps1
+start "MileMates Backend" powershell -ExecutionPolicy Bypass -File .\start_dev.ps1
 timeout /t 3 /nobreak >nul
-start "TripMate Frontend" powershell -ExecutionPolicy Bypass -File .\start_frontend.ps1
+start "MileMates Frontend" powershell -ExecutionPolicy Bypass -File .\start_frontend.ps1
 
 echo App is launching! Open http://localhost:5173 in your browser.
 timeout /t 5 >nul

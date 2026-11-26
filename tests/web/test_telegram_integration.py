@@ -998,8 +998,8 @@ async def test_ai_reply_relayed_with_ai_label_and_no_via_web():
     assert len(relayed) == 1
     chat_id, body = relayed[0]
     assert chat_id == -10022334455
-    # Must use TripMate AI label, NOT '(via web)'
-    assert "🤖 <b>TripMate AI:</b>" in body
+    # Must use MileMates AI label, NOT '(via web)'
+    assert "🤖 <b>MileMates AI:</b>" in body
     assert "(via web)" not in body
     # Markdown converted and raw HTML escaped
     assert "<b>Day 1</b>" in body

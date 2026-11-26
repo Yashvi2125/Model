@@ -98,7 +98,7 @@ def markdown_to_telegram_html(text: str) -> str:
 
 def relay_ai_reply(trip_id: int, text: str, tg_chat_id: Optional[int] = None) -> None:
     """Relays an AI assistant response to the bound Telegram group.
-    Uses 'TripMate AI' label (NOT via web), converts Markdown to Telegram-safe HTML,
+    Uses 'MileMates AI' label (NOT via web), converts Markdown to Telegram-safe HTML,
     and logs delivery warnings without raising.
     """
     if not tg_chat_id or not _telegram_sender_func:
@@ -111,7 +111,7 @@ def relay_ai_reply(trip_id: int, text: str, tg_chat_id: Optional[int] = None) ->
         return
 
     formatted_html = markdown_to_telegram_html(clean_text)
-    relay_html = f"🤖 <b>TripMate AI:</b>\n\n{formatted_html}"
+    relay_html = f"🤖 <b>MileMates AI:</b>\n\n{formatted_html}"
 
     async def _safe_send():
         try:

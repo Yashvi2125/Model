@@ -68,7 +68,7 @@ export function Profile() {
 
   return (
     <div className="mx-auto max-w-2xl">
-      <h1 className="text-3xl font-bold">Profile</h1>
+      <div><span className="eyebrow">Account</span><h1 className="mt-3 text-3xl font-bold sm:text-4xl">Profile</h1></div>
       <div className="card mt-6 p-6">
         <div className="mb-6 flex items-center gap-4"><Avatar name={user!.name} size="lg" />
           <div><p className="text-lg font-semibold">{user!.name}</p><p className="text-sm text-ink-500">Member since {shortDate(user!.created_at)}</p></div></div>
@@ -196,7 +196,7 @@ export function Settings() {
 
   return (
     <div className="mx-auto max-w-2xl">
-      <h1 className="text-3xl font-bold">Settings</h1>
+      <div><span className="eyebrow">Account</span><h1 className="mt-3 text-3xl font-bold sm:text-4xl">Settings</h1></div>
       <form onSubmit={submit} noValidate className="card mt-6 space-y-4 p-6">
         <h2 className="text-lg font-semibold">Change password</h2>
         {errors.form && <Alert>{errors.form}</Alert>}

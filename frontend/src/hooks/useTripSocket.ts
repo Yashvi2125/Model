@@ -45,7 +45,7 @@ export function useTripSocket(tripId: number): SocketState {
               !old ? old : old.some((m) => m.id === e.message.id) ? old : [...old, e.message]);
             break;
           case "presence": setState((s) => ({ ...s, online: e.online })); break;
-          case "ai_status": setState((s) => ({ ...s, aiThinking: e.state === "thinking", aiLabel: e.label ?? "TripMate AI is thinking…" })); break;
+          case "ai_status": setState((s) => ({ ...s, aiThinking: e.state === "thinking", aiLabel: e.label ?? "MileMates AI is thinking…" })); break;
           case "preferences_updated": qc.invalidateQueries({ queryKey: ["prefs", tripId] }); break;
           case "conflicts_updated": qc.invalidateQueries({ queryKey: ["conflicts", tripId] }); break;
           case "itinerary_updated":

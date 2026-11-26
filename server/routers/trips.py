@@ -67,7 +67,7 @@ def create_trip(body: TripCreate, user: User = Depends(current_user), db: Sessio
         db.add(ChecklistItem(trip_id=trip.id, text=text, position=i))
     db.commit()
     msgs.post(db, trip.id, "system", f"{user.name} created the trip. Share the code {trip.code} to invite friends — "
-                                     "and mention @ai in chat to talk to TripMate AI.")
+                                     "and mention @ai in chat to talk to MileMates AI.")
     return _detail(db, trip, member)
 
 

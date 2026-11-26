@@ -1,4 +1,4 @@
-# TripMate AI - Local Dev Launcher
+# MileMates AI - Local Dev Launcher
 # Runs the FastAPI backend on http://localhost:8000 (SQLite, no Docker needed).
 # Usage:  .\start_dev.ps1
 
@@ -23,7 +23,7 @@ Get-Content "$root\.env" | ForEach-Object {
 
 Write-Host ""
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "  TripMate AI - Local Dev Server" -ForegroundColor Cyan
+Write-Host "  MileMates AI - Local Dev Server" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host "  Backend  : http://localhost:8000" -ForegroundColor Green
 Write-Host "  API Docs : http://localhost:8000/api/docs" -ForegroundColor Green

@@ -1,4 +1,4 @@
-# TripMate AI — Multi-Agent Group Trip Planner
+# MileMates AI — Multi-Agent Group Trip Planner
 #   web      http://localhost:3000        (React + nginx; proxies /api and WebSockets to the backend)
 #   backend  http://localhost:8000        (FastAPI; docs at /api/docs)
 #   db       PostgreSQL 16, data in the "pgdata" volume (not published to your host)

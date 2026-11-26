@@ -57,7 +57,7 @@ def _load(trip_id: int, message_id: int) -> Optional[dict]:
         rows = prefs.member_prefs(db, trip_id)
         recent = db.scalars(select(Message).where(Message.trip_id == trip_id, Message.id <= message_id)
                             .order_by(Message.id.desc()).limit(12)).all()
-        recent_txt = "\n".join(f"{(r.sender.name if r.sender else 'TripMate AI')}: {r.content[:300]}"
+        recent_txt = "\n".join(f"{(r.sender.name if r.sender else 'MileMates AI')}: {r.content[:300]}"
                                for r in reversed(recent) if r.kind != "system")
         return {"ctx": trip_context(trip, rows), "sender": sender.name, "sender_id": sender.id, "text": m.content,
                 "recent": recent_txt, "travelers": trip.travelers_count}

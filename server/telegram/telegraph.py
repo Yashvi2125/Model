@@ -23,8 +23,8 @@ async def get_or_create_access_token() -> Optional[str]:
             resp = await client.post(
                 f"{API_BASE}/createAccount",
                 json={
-                    "short_name": "TripMate",
-                    "author_name": "TripMate AI",
+                    "short_name": "MileMates",
+                    "author_name": "MileMates AI",
                     "author_url": get_settings().public_base_url,
                 },
             )
@@ -76,7 +76,7 @@ def markdown_to_nodes(markdown_text: str) -> list[dict]:
 
 
 async def publish_itinerary_page(
-    title: str, plan_markdown: str, author_name: str = "TripMate AI"
+    title: str, plan_markdown: str, author_name: str = "MileMates AI"
 ) -> Optional[str]:
     """Publishes a formatted itinerary to telegra.ph and returns the public link."""
     token = await get_or_create_access_token()

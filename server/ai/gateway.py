@@ -1,4 +1,4 @@
-"""Central AI Gateway for TripMate.
+"""Central AI Gateway for MileMates.
 
 Provides unified routing, token-bucket rate limiting, priority queuing with starvation protection,
 in-memory call metering, and error classification.

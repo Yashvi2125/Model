@@ -101,7 +101,7 @@ export default function ResearchPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-bold">Map &amp; weather{r.destination ? ` — ${r.destination}` : ""}</h2>
+        <h2 className="text-2xl font-bold sm:text-3xl">Map &amp; weather{r.destination ? ` — ${r.destination}` : ""}</h2>
         <p className="text-ink-500">
           Interactive map and local weather for your destination and itinerary stops.
         </p>

@@ -1,4 +1,4 @@
-# TripMate AI - Frontend Dev Server
+# MileMates AI - Frontend Dev Server
 # Starts the Vite dev server on http://localhost:5173
 # (proxies /api calls to the backend on :8000)
 # Usage: .\start_frontend.ps1

@@ -66,7 +66,7 @@ def test_ai_mention_reaches_agents_and_creates_pending_suggestion(user_a, monkey
     user_a.post(f"/api/trips/{t['id']}/messages",
                 json={"content": "@ai I prefer a three-day trip to Udaipur, with historical places and a budget of ₹8,000 per person."})
     ai = wait_for(lambda: next((m for m in user_a.get(f"/api/trips/{t['id']}/messages").json() if m["kind"] == "ai"), None))
-    assert ai["content"].startswith("Noted") and ai["sender_name"] == "TripMate AI"
+    assert ai["content"].startswith("Noted") and ai["sender_name"] == "MileMates AI"
     assert calls["extract"][1] == "Asha Patel" and "@ai" not in calls["extract"][0]
 
     ov = user_a.get(f"/api/trips/{t['id']}/preferences").json()

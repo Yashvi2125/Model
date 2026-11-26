@@ -26,16 +26,16 @@ export default function Members() {
   const remove = useMutation({ mutationFn: (uid: number) => del(`/api/trips/${trip.id}/members/${uid}`), onSuccess: () => { qc.invalidateQueries({ queryKey: ["trip", trip.id] }); qc.invalidateQueries({ queryKey: ["prefs", trip.id] }); }, onError: err });
   const leave = useMutation({ mutationFn: () => post(`/api/trips/${trip.id}/leave`), onSuccess: () => { qc.invalidateQueries({ queryKey: ["trips"] }); navigate("/app/trips"); }, onError: err });
 
-  const share = async () => { try { await navigator.share({ title: trip.name, text: `Join our trip “${trip.name}” on TripMate AI. Code: ${trip.code}`, url: link }); } catch { /* cancelled */ } };
+  const share = async () => { try { await navigator.share({ title: trip.name, text: `Join our trip “${trip.name}” on MileMates AI. Code: ${trip.code}`, url: link }); } catch { /* cancelled */ } };
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
-      <section className="card p-6"><h2 className="text-xl font-semibold">Invite your group</h2>
-        <p className="mt-1 text-sm text-ink-500">Friends need a TripMate account. Send them the code or the link.</p>
+      <section className="card p-6 sm:p-8"><h2 className="text-xl font-semibold">Invite your group</h2>
+        <p className="mt-1 text-sm text-ink-500">Friends need a MileMates account. Send them the code or the link.</p>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          <div className="rounded-xl bg-sand-100 p-4"><p className="text-xs text-ink-500">Trip code</p><p className="mt-1 font-mono text-2xl font-bold tracking-widest">{trip.code.slice(0, 4)}-{trip.code.slice(4)}</p>
+          <div className="rounded-2xl bg-gradient-to-br from-lagoon-50 to-sand-100 p-5 ring-1 ring-lagoon-100"><p className="text-xs font-bold uppercase tracking-wider text-ink-500">Trip code</p><p className="mt-1 font-mono text-2xl font-bold tracking-widest">{trip.code.slice(0, 4)}-{trip.code.slice(4)}</p>
             <Button variant="secondary" className="mt-3 !py-1.5" onClick={() => copy("code", trip.code)}>{copied === "code" ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}{copied === "code" ? "Copied" : "Copy code"}</Button></div>
-          <div className="rounded-xl bg-sand-100 p-4"><p className="text-xs text-ink-500">Invite link</p><p className="mt-1 break-all text-sm font-medium">{link}</p>
+          <div className="rounded-2xl bg-gradient-to-br from-sun-100/60 to-sand-100 p-5 ring-1 ring-sand-200"><p className="text-xs font-bold uppercase tracking-wider text-ink-500">Invite link</p><p className="mt-1 break-all text-sm font-medium">{link}</p>
             <div className="mt-3 flex flex-wrap gap-2"><Button variant="secondary" className="!py-1.5" onClick={() => copy("link", link)}>{copied === "link" ? <Check className="h-4 w-4" /> : <Link2 className="h-4 w-4" />}{copied === "link" ? "Copied" : "Copy link"}</Button>
               {typeof navigator.share === "function" && <Button variant="secondary" className="!py-1.5" onClick={share}><Share2 className="h-4 w-4" />Share</Button>}</div></div>
         </div>

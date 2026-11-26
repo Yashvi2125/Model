@@ -4,6 +4,7 @@ import { Fragment, useLayoutEffect, useRef, useState, type KeyboardEvent } from 
 import { Link } from "react-router-dom";
 import { Markdown } from "../../components/Markdown";
 import { Avatar, Badge, PageLoader, QueryError, Spinner } from "../../components/ui";
+import { useFitHeight } from "../../hooks/useFitHeight";
 import { useTrip } from "../../layouts/tripContext";
 import { api, errorMessage, post } from "../../lib/api";
 import { dayLabel, timeOf } from "../../lib/format";
@@ -20,11 +21,11 @@ function PlanningPanel({ tripId }: { tripId: number }) {
   const itin = useQuery({ queryKey: ["itinerary", tripId], queryFn: () => api<Itinerary | null>(`/api/trips/${tripId}/itinerary`) });
   const filled = prefs.data?.members.filter((m) => m.missing.length < 4).length ?? 0;
   const open = conflicts.data?.conflicts.filter((c) => c.status === "open").length ?? 0;
-  const link = "flex items-center justify-between rounded-lg px-3 py-2 text-sm hover:bg-sand-100";
+  const link = "flex items-center justify-between rounded-xl px-3 py-2.5 text-sm transition-colors hover:bg-lagoon-50";
   return (
     <div className="space-y-4">
-      <section className="card p-4">
-        <h2 className="text-sm font-semibold">Members ({trip.members.length})</h2>
+      <section className="card p-5">
+        <h2 className="text-sm font-bold uppercase tracking-wider text-ink-500">Members ({trip.members.length})</h2>
         <ul className="mt-3 space-y-2.5">
           {trip.members.map((m) => (
             <li key={m.user_id} className="flex items-center gap-2.5">
@@ -37,7 +38,7 @@ function PlanningPanel({ tripId }: { tripId: number }) {
         </ul>
       </section>
       <section className="card p-2">
-        <h2 className="px-3 pt-2 text-sm font-semibold">Planning status</h2>
+        <h2 className="px-3 pt-3 text-sm font-bold uppercase tracking-wider text-ink-500">Planning status</h2>
         <ul className="mt-1">
           <li><Link to="../preferences" className={link}><span>Preferences shared</span><span className="font-semibold">{prefs.data ? `${filled}/${trip.members.length}` : "…"}</span></Link></li>
           {!!prefs.data?.pending_suggestions_total && <li><Link to="../preferences" className={link}><span>AI suggestions to review</span><Badge tone="amber">{prefs.data.pending_suggestions_total}</Badge></Link></li>}
@@ -52,14 +53,14 @@ function PlanningPanel({ tripId }: { tripId: number }) {
 
 function Bubble({ m, mine, tripPath }: { m: ChatMessage; mine: boolean; tripPath: string }) {
   if (m.kind === "system")
-    return <div className="my-2 text-center text-xs text-ink-500"><span className="rounded-full bg-sand-100 px-3 py-1">{m.content}</span></div>;
+    return <div className="my-2 text-center text-xs text-ink-500"><span className="rounded-full bg-sand-100/90 px-3.5 py-1 ring-1 ring-sand-200">{m.content}</span></div>;
   const ai = m.kind === "ai";
   const err = ai && m.meta.error === true;
   const isTg = m.channel === "telegram" || m.meta?.channel === "telegram";
   return (
     <div className={`flex items-end gap-2.5 ${mine ? "flex-row-reverse" : ""}`}>
-      {!mine && (ai ? <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-lagoon-600 text-white"><Sparkles className="h-4 w-4" aria-hidden /></span> : <Avatar name={m.sender_name} />)}
-      <div className={`max-w-[82%] rounded-2xl px-4 py-2.5 ${mine ? "rounded-br-md bg-lagoon-600 text-white" : err ? "rounded-bl-md border border-coral-500/30 bg-coral-100 text-coral-700" : ai ? "rounded-bl-md border border-lagoon-200 bg-lagoon-50" : "rounded-bl-md border border-sand-200 bg-white"}`}>
+      {!mine && (ai ? <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-lagoon-500 to-lagoon-600 text-white shadow-glow"><Sparkles className="h-4 w-4" aria-hidden /></span> : <Avatar name={m.sender_name} />)}
+      <div className={`max-w-[82%] rounded-3xl px-4 py-3 shadow-sm ${mine ? "rounded-br-md bg-gradient-to-br from-lagoon-500 to-lagoon-600 text-white shadow-glow" : err ? "rounded-bl-md border border-coral-500/30 bg-coral-100 text-coral-700" : ai ? "rounded-bl-md border border-lagoon-200 bg-gradient-to-br from-lagoon-50 to-white" : "rounded-bl-md border border-sand-200 bg-white"}`}>
         <p className={`mb-0.5 flex items-center flex-wrap gap-1 text-xs font-semibold ${mine ? "text-lagoon-100" : "text-ink-500"}`}>
           <span>{mine ? "You" : m.sender_name}</span>
           {isTg && <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-medium bg-sky-100 text-sky-800 border border-sky-200">Telegram</span>}
@@ -95,6 +96,8 @@ export default function Chat() {
   });
   const endRef = useRef<HTMLDivElement>(null);
   const boxRef = useRef<HTMLDivElement>(null);
+  const cardRef = useRef<HTMLElement>(null);
+  useFitHeight(cardRef, 300);
   const stick = useRef(true);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
@@ -121,9 +124,9 @@ export default function Chat() {
   const msgs = q.data ?? [];
   let lastDay = "";
   return (
-    <div className="grid gap-5 lg:grid-cols-[1fr_17rem]">
-      <section className="card flex h-[calc(100dvh-13rem)] sm:h-[calc(100dvh-15rem)] min-h-[26rem] flex-col overflow-hidden" aria-label="Group chat">
-        <div className="no-print flex items-center justify-between border-b border-sand-200 bg-sand-50/70 px-4 py-2">
+    <div className="grid gap-4 lg:grid-cols-[1fr_17rem] lg:gap-5">
+      <section ref={cardRef} className="card flex h-[calc(100dvh-15rem)] min-h-[18rem] flex-col overflow-hidden" aria-label="Group chat">
+        <div className="no-print flex items-center justify-between border-b border-sand-200/80 bg-white/60 px-4 py-2.5">
           <div className="flex items-center gap-2">
             <button className="flex items-center gap-1.5 text-sm font-semibold text-lagoon-800 lg:hidden" aria-expanded={panel} onClick={() => setPanel((p) => !p)}>
               Group info <ChevronDown className={`h-4 w-4 transition-transform ${panel ? "rotate-180" : ""}`} />
@@ -133,7 +136,7 @@ export default function Chat() {
           </div>
           <button
             type="button"
-            className="inline-flex items-center gap-1.5 rounded-lg border border-sand-300 bg-white px-2.5 py-1 text-xs font-semibold text-ink-700 shadow-sm hover:bg-sand-100 disabled:opacity-60"
+            className="inline-flex items-center gap-1.5 rounded-full border border-sand-300 bg-white px-3 py-1.5 text-xs font-semibold text-ink-700 shadow-sm transition-colors hover:border-lagoon-200 hover:bg-lagoon-50 disabled:opacity-60"
             onClick={() => summarize.mutate()}
             disabled={summarize.isPending}
           >
@@ -173,7 +176,7 @@ export default function Chat() {
           {q.isLoading ? <PageLoader label="Loading messages…" /> : q.error ? <QueryError error={q.error} retry={() => q.refetch()} /> :
             msgs.length === 0 && out.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center text-center text-ink-500"><Sparkles className="mb-3 h-8 w-8 text-lagoon-600" />
-                <p className="font-semibold text-ink-900">No messages yet</p><p className="max-w-xs text-sm">Say hello, share what you’d love to do, or mention @ai to ask TripMate AI.</p></div>) :
+                <p className="font-semibold text-ink-900">No messages yet</p><p className="max-w-xs text-sm">Say hello, share what you’d love to do, or mention @ai to ask MileMates AI.</p></div>) :
               msgs.map((m) => {
                 const d = dayLabel(m.created_at); const show = d !== lastDay; lastDay = d;
                 return <Fragment key={m.id}>{show && <p className="py-1 text-center text-xs font-semibold text-ink-400">{d}</p>}
@@ -189,20 +192,20 @@ export default function Chat() {
                     <button className="underline" onClick={() => setOut((x) => x.filter((y) => y.tempId !== o.tempId))}>Discard</button></p>}
               </div>
             </div>))}
-          {socket.aiThinking && <div className="flex items-center gap-2 text-sm text-lagoon-800" role="status"><Spinner />{socket.aiLabel || "TripMate AI is thinking…"}</div>}
+          {socket.aiThinking && <div className="flex items-center gap-2 text-sm text-lagoon-800" role="status"><Spinner />{socket.aiLabel || "MileMates AI is thinking…"}</div>}
           <div ref={endRef} />
         </div>
 
-        <div className="no-print border-t border-sand-200 p-3 bg-white">
-          <div className="mb-2 flex flex-wrap gap-1.5">{starters.map((s) => <button key={s} className="chip !py-1 text-xs" onClick={() => { setText(s); taRef.current?.focus(); }}>{s.length > 38 ? s.slice(0, 36) + "…" : s}</button>)}</div>
+        <div className="no-print border-t border-sand-200/80 bg-white/80 p-3 backdrop-blur">
+          <div className="no-scrollbar -mx-3 mb-2 flex gap-1.5 overflow-x-auto px-3 sm:mx-0 sm:flex-wrap sm:px-0">{starters.map((s) => <button key={s} className="chip shrink-0 whitespace-nowrap !py-1 text-xs" onClick={() => { setText(s); taRef.current?.focus(); }}>{s.length > 38 ? s.slice(0, 36) + "…" : s}</button>)}</div>
           <div className="flex items-end gap-2">
-            <button type="button" className="btn-secondary !p-0 h-11 w-11 shrink-0 flex items-center justify-center rounded-xl" onClick={insertAi} aria-label="Mention TripMate AI" title="Mention TripMate AI"><AtSign className="h-5 w-5" /></button>
+            <button type="button" className="btn-secondary !p-0 h-11 w-11 shrink-0 flex items-center justify-center rounded-xl" onClick={insertAi} aria-label="Mention MileMates AI" title="Mention MileMates AI"><AtSign className="h-5 w-5" /></button>
             <label className="sr-only" htmlFor="chat-input">Message</label>
             <textarea id="chat-input" ref={taRef} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={onKey} rows={1} maxLength={4000}
-              placeholder="Message your group — mention @ai to talk to TripMate AI" className="input max-h-36 min-h-[44px] resize-none" />
+              placeholder="Message your group — @ai to ask AI" className="input max-h-36 min-h-[44px] resize-none" />
             <button type="button" onClick={submit} disabled={!text.trim()} className="btn-primary !p-0 h-11 w-11 shrink-0 flex items-center justify-center rounded-xl disabled:opacity-40" aria-label="Send message"><Send className="h-5 w-5" /></button>
           </div>
-          <p className="mt-1.5 text-xs text-ink-400">Enter to send · Shift+Enter for a new line. Only messages that mention @ai get a reply; other messages may be scanned for preferences you’ll be asked to confirm.</p>
+          <p className="mt-1.5 hidden text-xs text-ink-400 sm:block">Enter to send · Shift+Enter for a new line. Only messages that mention @ai get a reply; other messages may be scanned for preferences you’ll be asked to confirm.</p>
         </div>
       </section>
       <aside className="no-print hidden lg:block"><PlanningPanel tripId={trip.id} /></aside>

@@ -40,7 +40,7 @@ export default function Checklist() {
     <div className="mx-auto max-w-2xl space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-2xl font-bold">Pre-trip checklist</h2>
+          <h2 className="text-2xl font-bold sm:text-3xl">Pre-trip checklist</h2>
           <p className="text-ink-500">Preparation tasks for the group. These are reminders, not bookings.</p>
         </div>
         <Button
@@ -52,10 +52,10 @@ export default function Checklist() {
           <Sparkles className="h-4 w-4 text-sun-500" /> AI Suggest Packing List
         </Button>
       </div>
-      <Alert kind="info">TripMate AI doesn’t book hotels, flights or transport. Use this list to track what you still need to arrange yourselves.</Alert>
-      <div className="card p-5">
+      <Alert kind="info">MileMates AI doesn’t book hotels, flights or transport. Use this list to track what you still need to arrange yourselves.</Alert>
+      <div className="card p-5 sm:p-6">
         <div className="mb-4"><div className="flex justify-between text-sm"><span className="font-semibold">{done} of {total} done</span><span className="text-ink-500">{total ? Math.round((done / total) * 100) : 0}%</span></div>
-          <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-sand-200" role="progressbar" aria-valuenow={done} aria-valuemin={0} aria-valuemax={total} aria-label="Checklist progress"><div className="h-full rounded-full bg-lagoon-600 transition-all" style={{ width: `${total ? (done / total) * 100 : 0}%` }} /></div></div>
+          <div className="mt-2 h-2.5 overflow-hidden rounded-full bg-sand-200" role="progressbar" aria-valuenow={done} aria-valuemin={0} aria-valuemax={total} aria-label="Checklist progress"><div className="h-full rounded-full bg-gradient-to-r from-lagoon-500 to-lagoon-600 transition-all duration-500" style={{ width: `${total ? (done / total) * 100 : 0}%` }} /></div></div>
         <ul className="divide-y divide-sand-200">
           {q.data.map((i) => (
             <li key={i.id} className="flex flex-wrap items-center gap-3 py-2.5">

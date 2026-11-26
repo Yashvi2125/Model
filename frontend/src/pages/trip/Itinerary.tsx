@@ -83,9 +83,9 @@ export default function ItineraryPage() {
   const d = it.days; const b = budget.data;
   return (
     <div className="space-y-6">
-      <section className="card p-6">
+      <section className="card p-6 sm:p-8">
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div><h2 className="text-2xl font-bold">{trip.destination ?? "Your itinerary"}</h2>
+          <div><h2 className="text-2xl font-bold sm:text-3xl">{trip.destination ?? "Your itinerary"}</h2>
             <p className="mt-1 flex flex-wrap items-center gap-x-5 gap-y-1 text-sm text-ink-500">
               <span className="inline-flex items-center gap-1.5"><CalendarDays className="h-4 w-4" />{dateRange(trip.start_date, trip.end_date)} · {dayCount(trip.start_date, trip.end_date)} days</span>
               <span className="inline-flex items-center gap-1.5"><Users className="h-4 w-4" />{trip.travelers_count} travellers</span>
@@ -109,12 +109,12 @@ export default function ItineraryPage() {
       {it.budget_error && <Alert kind="info">Budget: {it.budget_error}</Alert>}
 
       {d.structured && d.days ? (
-        <ol className="space-y-5">
+        <ol className="space-y-6">
           {d.days.map((day) => (
-            <li key={day.day} className="card overflow-hidden">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-sand-200 bg-lagoon-50 px-5 py-3">
+            <li key={day.day} className="card card-hover overflow-hidden">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-lagoon-100 bg-gradient-to-r from-lagoon-50 via-white to-sun-100/40 px-5 py-3.5">
                 <div className="flex items-center gap-2">
-                  <h3 className="text-lg font-semibold text-lagoon-800">{day.title}</h3>
+                  <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-lagoon-600 font-display text-sm font-bold text-white shadow-glow" aria-hidden>{day.day}</span><h3 className="text-lg font-semibold text-lagoon-800">{day.title}</h3>
                   {(day as any)._provider && (
                     <span className="rounded-full bg-lagoon-200/80 px-2 py-0.5 text-[10px] font-medium text-lagoon-800">
                       {(day as any)._provider === "qwen" ? "Qwen 2.5 (Local)" : "Gemini"}
@@ -165,8 +165,8 @@ export default function ItineraryPage() {
               <div className="space-y-4 p-5">
                 {day.intro && <Markdown>{day.intro}</Markdown>}
                 {day.sections.length > 0 ? day.sections.map((s, i) => { const P = PERIODS[s.period]; return (
-                  <div key={i} className="grid gap-2 sm:grid-cols-[8rem_1fr]">
-                    <p className="flex items-center gap-2 text-sm font-semibold text-ink-700"><P.icon className="h-4 w-4 text-sun-500" aria-hidden />{P.label}</p>
+                  <div key={i} className="grid gap-2 rounded-2xl bg-sand-50/80 p-4 ring-1 ring-sand-200/70 sm:grid-cols-[8rem_1fr]">
+                    <p className="flex items-center gap-2 text-sm font-bold text-ink-700"><span className="flex h-8 w-8 items-center justify-center rounded-xl bg-sun-100 text-sun-700"><P.icon className="h-4 w-4" aria-hidden /></span>{P.label}</p>
                     <Markdown>{s.content}</Markdown></div>); }) : null}
               </div>
             </li>))}

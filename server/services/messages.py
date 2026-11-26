@@ -9,7 +9,7 @@ from server.services.realtime import publish
 
 
 def to_out(m: Message) -> MessageOut:
-    name = m.sender.name if m.sender else ("TripMate AI" if m.kind == "ai" else "TripMate")
+    name = m.sender.name if m.sender else ("MileMates AI" if m.kind == "ai" else "MileMates")
     return MessageOut(
         id=m.id,
         trip_id=m.trip_id,

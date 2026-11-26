@@ -29,7 +29,9 @@ export async function api<T = unknown>(path: string, init: { method?: string; bo
   let data: any = null;
   try { data = await res.json(); } catch { /* non-JSON error body */ }
   if (!res.ok) {
-    const detail = typeof data?.detail === "string" ? data.detail : "Something went wrong. Please try again.";
+    const detail = typeof data?.detail === "string" ? data.detail
+      : res.status >= 500 ? "The server isn’t responding properly. Make sure the backend is running on port 8000 (check its terminal for errors), then try again."
+      : "Something went wrong. Please try again.";
     if (res.status === 401 && !path.startsWith("/api/auth/")) onUnauthorized?.();
     throw new ApiError(res.status, detail, data?.fields ?? {});
   }

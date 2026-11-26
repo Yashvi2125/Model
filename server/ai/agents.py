@@ -9,6 +9,7 @@ The Itinerary Planning + Travel Research agents are the project's existing Plann
 """
 import json
 import logging
+import re
 from datetime import date
 from typing import Any, Optional
 
@@ -94,7 +95,7 @@ async def extract_preferences(text: str, traveller: str, trip_ctx: str) -> Extra
 
 
 # ---------------------------------------------------------------- assistant reply
-CHAT_SYSTEM = """You are TripMate AI, the assistant inside a group trip-planning chat.
+CHAT_SYSTEM = """You are MileMates AI, the assistant inside a group trip-planning chat.
 Be warm, concise (under 130 words) and practical. Use the trip context provided; never invent prices, opening hours, availability or bookings.
 - If the traveller shared preferences, acknowledge them briefly and say they're saved as suggestions to review in the Preferences tab (they are not applied automatically).
 - If members clearly disagree, point to the Conflicts tab.
@@ -204,10 +205,42 @@ async def scan_chat_for_conflicts(
 
 # ---------------------------------------------------------------- budget extraction
 BUDGET_SYSTEM = f"""You are the Budget Agent's extraction step. Read the travel plan and list ONLY cost figures that are explicitly written in it.
-Do NOT invent, estimate or fill gaps. Do NOT add totals. If no costs are stated, return an empty list.
+Do NOT invent, estimate or fill gaps. Never multiply anything yourself - the program does all the maths.
 Return ONLY JSON: {{"items": [{{"category": one of {CATEGORIES}, "label": short text, "amount": number, "basis": one of {BASES}, "source_text": the exact fragment of the plan the number came from}}]}}
-basis meanings: group_total = one amount for the whole group; per_person = per traveller once; per_person_per_day = per traveller per day (e.g. daily food); per_night_group = whole-group accommodation price per night.
-If a range is given use the midpoint. Skip items whose basis is unclear."""
+basis meanings: group_total = one amount for the whole group; per_person = per traveller, charged once; per_person_per_day = per traveller per day (e.g. daily food); per_night_group = whole-group accommodation price per night.
+STRICT RULES (these prevent wrong totals):
+1. List every cost ONCE. If the same cost appears in a day-by-day section and again in a summary or table, keep only one entry.
+2. NEVER list totals, subtotals, "estimated total", "budget summary", per-person totals or grand totals - only the individual items they are made of.
+3. Pick the basis from the words in the plan: "per person"/"pp"/"each" -> per_person; "per person per day"/"daily" -> per_person_per_day; "per night" for a hotel/room -> per_night_group; "for the group"/"total for X" or no per-person wording -> group_total.
+4. The amount is the number as written, in the trip currency, with no conversion. If a range is given use the midpoint.
+5. Skip any item whose amount or basis is unclear instead of guessing.
+6. If a hotel is given as a total for the whole stay, use group_total, not per_night_group."""
+
+
+_TOTALISH = re.compile(
+    r"^\s*(grand\s*total|sub-?\s*total|total(\s+(estimated|estimate|cost|costs|budget|trip|expenses?|spend|per\s+person))?|"
+    r"overall(\s+(cost|total|budget))?|estimated\s+(total|budget|cost)|trip\s+total|budget\s+(summary|total)|per\s+person\s+total)\b",
+    re.IGNORECASE,
+)
+
+
+def sanitize_budget_items(items: list[dict]) -> list[dict]:
+    """Drop lines that would double count: totals/subtotals and repeats of the same cost."""
+    seen: set[tuple] = set()
+    clean: list[dict] = []
+    for it in items:
+        label = (it.get("label") or "").strip()
+        if _TOTALISH.match(label):
+            continue
+        key = (it["category"], round(float(it["amount"]), 2), it["basis"], re.sub(r"\W+", "", label.lower())[:30])
+        src_key = (round(float(it["amount"]), 2), re.sub(r"\W+", "", (it.get("source_text") or "").lower())[:60])
+        if key in seen or (src_key[1] and src_key in seen):
+            continue
+        seen.add(key)
+        if src_key[1]:
+            seen.add(src_key)
+        clean.append(it)
+    return clean
 
 
 async def extract_budget_items(plan: str, currency: str, travelers: int, days: int) -> list[dict]:
@@ -229,4 +262,4 @@ async def extract_budget_items(plan: str, currency: str, travelers: int, days: i
         items.append({"category": it.get("category") if it.get("category") in CATEGORIES else "other",
                       "label": str(it.get("label", ""))[:120], "amount": amount, "basis": it["basis"],
                       "source_text": str(it.get("source_text", ""))[:300]})
-    return items[:60]
+    return sanitize_budget_items(items)[:60]
